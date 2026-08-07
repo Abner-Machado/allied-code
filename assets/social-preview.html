@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:1280px; height:640px; }
+  body {
+    background:#0b0f14;
+    color:#e8edf2;
+    font-family:"Segoe UI", system-ui, sans-serif;
+    display:flex;
+    align-items:center;
+    gap:64px;
+    padding:100px;
+    position:relative;
+    overflow:hidden;
+  }
+  .glow {
+    position:absolute; inset:auto auto -220px -180px;
+    width:640px; height:640px; border-radius:50%;
+    background:radial-gradient(circle, rgba(86,156,214,.20), transparent 65%);
+  }
+  .mascot {
+    width:360px; flex:none; position:relative;
+    filter:drop-shadow(0 12px 32px rgba(0,0,0,.6));
+  }
+  .mascot img { width:100%; display:block; }
+  .copy { position:relative; }
+  h1 {
+    font-size:82px; font-weight:700; letter-spacing:-2px; line-height:1;
+  }
+  .rule { width:96px; height:5px; background:#569cd6; margin:26px 0 24px; border-radius:3px; }
+  p { font-size:30px; line-height:1.35; color:#a9b6c4; font-weight:400; }
+  .foot {
+    position:absolute; left:100px; bottom:64px;
+    font-size:22px; color:#7d8b99; letter-spacing:.5px;
+  }
+</style>
+<div class="glow"></div>
+<div class="mascot"><img src="mascot.svg" alt=""></div>
+<div class="copy">
+  <h1>Allied Code</h1>
+  <div class="rule"></div>
+  <p>A guard that blocks a command<br>because of what already went wrong here.</p>
+</div>
+<div class="foot">Python · no dependencies · runs before the tool call</div>

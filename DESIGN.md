@@ -1,0 +1,112 @@
+# Design notes
+
+## The premise
+
+Guardrails are usually written as a list of forbidden patterns. That list has two
+properties that make it age badly: it is written before the failures happen, and
+it never changes after them. Meanwhile every team accumulates the other thing —
+a set of scars, each one with a rule attached, kept in someone's head or in a
+document nobody reads at the moment it would matter.
+
+`ops-guard` is the claim that those scars are the right input to a guard, and
+that consulting them before an action is the part worth automating. Retrieving
+the relevant past failure at the exact moment it applies is not something a human
+does well, because it requires perfect recall of things that happened months ago
+and were boring at the time.
+
+## Two readings of one corpus
+
+The same set of incidents answers two different questions.
+
+| Question | When | Command |
+|---|---|---|
+| Should this action run? | during the work, per tool call | `guard check`, the hook |
+| What should I know first? | before the work, per task | `guard brief` |
+
+The second reading is why the corpus keeps paying after the blocking becomes
+routine. A briefing is retrieval without enforcement: hand it to whoever — or
+whatever — is about to start, and the failure gets avoided instead of blocked.
+This is also the hook into orchestration: before delegating a task, the
+orchestrator asks for a briefing on that task and passes it down. The subagent
+starts with the scars already in context, and the guard still stands behind it
+per call.
+
+## The decision
+
+```
+hazard classes  →  severity floor
+recorded incidents  →  raise the floor when precedent is strong
+                       (a critical/high incident scoring ≥ 0.5)
+
+critical  →  deny
+high      →  ask
+medium    →  ask if there is precedent, otherwise defer
+none      →  defer (no retrieval; nothing to justify)
+```
+
+Three deliberate choices in that table:
+
+**The guard never grants.** It returns `deny`, `ask` or `defer` — never `allow`
+by default. A guard that can lower friction is a guard that can be talked into
+lowering it, and the failure mode is silent.
+
+**Precedent escalates, it never de-escalates.** An absent incident cannot make a
+`critical` action acceptable. Otherwise the corpus becomes an allowlist and every
+new hazard is legal until it hurts someone.
+
+**Observe is the default.** The gap between what the guard *did* and what it
+*would have done* (`decision` vs `intended` in every receipt) is measurable
+before anything is enforced. That gap is the honest way to argue for turning it
+on.
+
+## Why lexical retrieval
+
+Embeddings would match meaning better. They would also mean a model call or a
+loaded model in front of every tool call in the session. The budget here is a few
+milliseconds and zero network, so the trade is: worse recall, no dependency, no
+latency, no service to keep running, works offline on a laptop.
+
+Measured on a low-end machine: ~0.1 ms when no hazard class matches (retrieval is
+skipped entirely), ~4 ms when it runs against the shipped corpus. A test asserts
+the per-call budget so a future change cannot quietly blow it.
+
+If the corpus ever grows past a few hundred incidents, the index is the thing to
+replace — not the interface around it.
+
+## Threat model
+
+In scope: accidents, overconfident automation, and delegated processes acting
+outside their mandate. Those are the failures that actually happen and the ones
+the corpus is made of.
+
+Out of scope: an adversary with shell access. Classification is regex over a
+command string and loses to trivial obfuscation. Claiming otherwise would be the
+same fabrication the corpus warns about in
+`corpus/fabricated-verification-report.md`.
+
+## Receipts
+
+Every decision appends one JSON line: timestamp, tool, redacted action, decision,
+what it would have been when enforcing, hazard classes, cited incidents with
+scores, latency, session and agent identifiers. Reasons for keeping them:
+
+- A block you cannot audit later is an obstacle, not a control.
+- `guard stats` turns the ledger into an argument: how often the guard fires,
+  which incidents are load-bearing, which have never been cited once (candidates
+  for deletion — a corpus that only grows is a corpus nobody trusts).
+- The `agent` field is what makes per-agent policy possible later without
+  changing the format.
+
+Redaction runs before anything is written. A guard that leaks the credential it
+was protecting is worse than no guard.
+
+## Direction
+
+1. **Operations RAG.** The corpus is already retrieval over operational memory.
+   The next step is ingesting the ledger back into it: a receipt that led to a
+   real incident becomes an incident file, with `guard learn --from-ledger`.
+2. **Orchestration.** Briefing on delegation, receipts tagged per agent, and a
+   per-agent policy — a subagent with a narrow mandate should hit a lower ceiling
+   than the orchestrator, and the ledger already records who asked.
+3. **Better recall without a service.** Synonym expansion over tags before
+   anything heavier gets considered.

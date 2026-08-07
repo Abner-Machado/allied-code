@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ops-guard"
+version = "0.1.0"
+description = "A pre-execution guard for coding agents that decides from recorded incidents instead of a static blocklist."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Abner Machado" }]
+keywords = ["agents", "guardrails", "operations", "audit", "incident-response"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = []
+
+[project.scripts]
+guard = "guard.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["guard"]

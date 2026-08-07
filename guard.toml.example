@@ -1,0 +1,29 @@
+# Copy to guard.toml. The nearest file walking up from the working directory wins.
+[guard]
+# observe: classify, retrieve and record, but never block.
+# enforce: allow the guard to return `deny`.
+mode = "observe"
+
+corpus_dir = "corpus"
+ledger_path = "ledger.jsonl"
+
+# How many incidents may be cited as evidence for one decision.
+evidence = 3
+
+# Minimum retrieval score for an incident to count as evidence at all.
+# Raise it if the reasons start citing incidents that are only loosely related.
+min_score = 0.35
+
+# Off on purpose. Turning this on lets the guard return `allow`, which silences
+# the normal permission prompt for actions it believes are harmless.
+allow_safe = false
+
+# Writes to these paths are treated as hazards. Matched by suffix.
+protected_paths = [
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".env",
+    "key.txt",
+    "credentials.json",
+    "id_rsa",
+]
