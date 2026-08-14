@@ -21,6 +21,11 @@ dependencies = []
 
 [project.scripts]
 guard = "guard.cli:main"
+# The hooks get their own entry points so the agent settings never have to carry
+# an interpreter path or a PYTHONPATH. A hook command that depends on the shell's
+# working directory works on the machine it was written on and nowhere else.
+guard-hook = "guard.hook:main"
+guard-inject = "guard.inject:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["guard"]

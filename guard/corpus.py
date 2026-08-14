@@ -64,19 +64,51 @@ def tokenize(text: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _scalar(value: str) -> str:
+    value = value.strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    return value.strip().strip('"').strip("'").strip()
+
+
+def _front_matter(raw: str) -> dict[str, str]:
+    """Front matter, tolerant of the YAML shapes a note-taking app writes.
+
+    An incident is worth more when it lives in the vault the author already reads,
+    so the front matter has to survive being edited by Obsidian or any other
+    markdown tool. Those write list values two ways: inline (`tags: [a, b]`) and
+    as a block of `- a` lines. Both used to arrive here damaged — the inline form
+    kept its brackets, and the block form was dropped entirely, because a `- a`
+    line has no colon and fell through the filter. Losing the tags does not fail
+    loudly; retrieval simply gets worse and nobody is told why.
+    """
+    meta: dict[str, str] = {}
+    key: str | None = None
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("- ") and key is not None:
+            meta[key] = f"{meta[key]} {_scalar(stripped[2:])}".strip()
+            continue
+        if ":" not in stripped:
+            continue
+        name, _, value = stripped.partition(":")
+        key = name.strip().lower()
+        meta[key] = _scalar(value)
+    return meta
+
+
 def parse(text: str, path: Path) -> Incident | None:
     match = _FRONT.match(text)
     if not match:
         return None
-    meta: dict[str, str] = {}
-    for line in match.group(1).splitlines():
-        if ":" not in line or line.lstrip().startswith("#"):
-            continue
-        key, _, value = line.partition(":")
-        meta[key.strip().lower()] = value.strip().strip('"').strip("'")
+    meta = _front_matter(match.group(1))
 
     identifier = meta.get("id") or path.stem
-    tags = tuple(t for t in re.split(r"[,\s]+", meta.get("tags", "")) if t)
+    tags = tuple(
+        clean for t in re.split(r"[,\s]+", meta.get("tags", "")) if (clean := t.strip("\"'#"))
+    )
     return Incident(
         id=identifier,
         title=meta.get("title", identifier),

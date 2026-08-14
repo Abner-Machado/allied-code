@@ -14,7 +14,7 @@ import time
 import unittest
 from pathlib import Path
 
-from guard import corpus, hook, ledger, rules
+from guard import cli, corpus, hook, inject, ledger, rules
 from guard.config import Config
 from guard.decide import ASK, DENY, DEFER, evaluate
 
@@ -88,6 +88,107 @@ class TestCorpus(unittest.TestCase):
     def test_unrelated_query_scores_low(self):
         hits = corpus.search(CORPUS, "sort a list of integers in place", limit=1, min_score=0.35)
         self.assertEqual(hits, [])
+
+
+class TestVaultFrontMatter(unittest.TestCase):
+    """Front matter written by a note-taking app has to parse the same as ours.
+
+    The block-list form is the one that mattered: it produced no tags at all, and
+    a corpus that quietly loses its tags retrieves worse without ever failing.
+    """
+
+    def incident(self, tag_line: str):
+        text = f"---\nid: t\ntitle: t\n{tag_line}\nrule: r\n---\n\nbody\n"
+        return corpus.parse(text, Path("t.md"))
+
+    def test_space_separated_tags_still_parse(self):
+        self.assertEqual(self.incident("tags: delete uninstall").tags, ("delete", "uninstall"))
+
+    def test_inline_list_drops_the_brackets(self):
+        self.assertEqual(self.incident("tags: [delete, uninstall]").tags, ("delete", "uninstall"))
+
+    def test_block_list_is_not_lost(self):
+        self.assertEqual(self.incident("tags:\n  - delete\n  - uninstall").tags, ("delete", "uninstall"))
+
+    def test_quoted_and_hashed_tags_are_cleaned(self):
+        self.assertEqual(self.incident('tags:\n  - "#delete"\n  - "#uninstall"').tags, ("delete", "uninstall"))
+
+    def test_block_list_tags_reach_retrieval(self):
+        found = self.incident("tags:\n  - webhook\n  - rotation")
+        self.assertIn("webhook", found.tokens)
+
+
+class TestInjection(unittest.TestCase):
+    """The layer that writes into a prompt, so the bar is: relevant, capped, silent on doubt."""
+
+    def setUp(self):
+        self.cfg = config()
+
+    def test_prompt_sized_query_still_retrieves(self):
+        # The regression that motivated the threshold: this exact sentence scored
+        # 0.219, under a floor of 0.45, so the layer was silently disabled.
+        prompt = (
+            "I want to clean up the repository, remove the old feature branches and "
+            "force push the result to origin so the history is tidy"
+        )
+        self.assertIn("corpus/", inject.for_prompt(prompt, self.cfg))
+
+    def test_irrelevant_prompt_injects_nothing(self):
+        self.assertEqual(inject.for_prompt("rename a local variable in a test file", self.cfg), "")
+
+    def test_empty_prompt_injects_nothing(self):
+        self.assertEqual(inject.for_prompt("   ", self.cfg), "")
+
+    def test_injection_is_capped(self):
+        text = inject.for_prompt("delete uninstall tooling secret key push publish config", self.cfg)
+        self.assertLessEqual(len(text), inject.MAX_CHARS)
+
+    def test_session_start_carries_only_critical_rules(self):
+        text = inject.for_session(self.cfg)
+        self.assertTrue(text.startswith("Standing rules"))
+
+    def test_missing_corpus_is_silent(self):
+        blank = config()
+        blank.corpus_dir = ROOT / "does-not-exist"
+        self.assertEqual(inject.for_prompt("delete everything recursively", blank), "")
+        self.assertEqual(inject.for_session(blank), "")
+
+    def test_garbage_stdin_never_raises(self):
+        for raw in ("", "not json", "[]", '{"prompt": null}'):
+            with self.subTest(raw=raw):
+                self.assertIsInstance(inject.run(raw), dict)
+
+
+class TestInstallMerge(unittest.TestCase):
+    """Installing must not be able to cost the user a setting they already had."""
+
+    def test_all_three_layers_are_offered(self):
+        events = cli.hook_settings("python")["hooks"]
+        self.assertEqual(set(events), {"SessionStart", "UserPromptSubmit", "PreToolUse"})
+
+    def test_unrelated_settings_survive(self):
+        existing = {"permissions": {"allow": ["Bash(git status)"]}, "model": "opus"}
+        merged = cli._merge_hooks(existing, cli.hook_settings("python"))
+        self.assertEqual(merged["permissions"], {"allow": ["Bash(git status)"]})
+        self.assertEqual(merged["model"], "opus")
+
+    def test_foreign_hook_on_the_same_event_survives(self):
+        existing = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "theirs"}]}]}}
+        merged = cli._merge_hooks(existing, cli.hook_settings("python"))
+        commands = json.dumps(merged["hooks"]["PreToolUse"])
+        self.assertIn("theirs", commands)
+        self.assertIn("guard.hook", commands)
+
+    def test_installing_twice_does_not_duplicate(self):
+        block = cli.hook_settings("python")
+        once = cli._merge_hooks({}, block)
+        twice = cli._merge_hooks(once, block)
+        self.assertEqual(twice, once)
+
+    def test_merge_does_not_mutate_the_original(self):
+        existing = {"hooks": {"PreToolUse": []}}
+        cli._merge_hooks(existing, cli.hook_settings("python"))
+        self.assertEqual(existing, {"hooks": {"PreToolUse": []}})
 
 
 class TestDecision(unittest.TestCase):

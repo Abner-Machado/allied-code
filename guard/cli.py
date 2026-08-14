@@ -12,9 +12,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+import sys
 import time
 from collections import Counter
 from pathlib import Path
+
+DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
 
 from . import __version__
 from .config import Config
@@ -161,23 +165,131 @@ def cmd_learn(args, config: Config) -> int:
     return 0
 
 
-def cmd_install(args, config: Config) -> int:
-    root = Path(__file__).resolve().parent.parent
-    command = f'"{args.python}" -m guard.hook'
-    snippet = {
+def _commands(python: str | None) -> tuple[str, str]:
+    """The two hook commands, preferring the installed entry points.
+
+    After `pip install` the console scripts are on PATH and the settings file can
+    stay free of interpreter paths. Running straight from a checkout there are no
+    scripts, so fall back to the interpreter — with the absolute path, because a
+    hook inherits neither the shell nor the working directory it was written in.
+    """
+    if python is None and shutil.which("guard-hook") and shutil.which("guard-inject"):
+        return "guard-hook", "guard-inject"
+    interpreter = python or sys.executable
+    return f'"{interpreter}" -m guard.hook', f'"{interpreter}" -m guard.inject'
+
+
+def hook_settings(python: str | None = None) -> dict:
+    """The three places the corpus is consulted, as an agent settings block.
+
+    They are not redundant. `SessionStart` carries the standing rules, once, for
+    free. `UserPromptSubmit` answers "has this gone wrong here before?" while the
+    plan is still being written. `PreToolUse` is the last line, and the only one
+    that can stop anything — by which point the reasoning that produced the
+    command is already spent. Installing only the last one is how a guard ends up
+    arguing with a plan instead of shaping it.
+    """
+    hook_cmd, inject_cmd = _commands(python)
+    return {
         "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": inject_cmd, "timeout": 10}]}],
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": inject_cmd, "timeout": 10}]}],
             "PreToolUse": [
                 {
                     "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit",
-                    "hooks": [{"type": "command", "command": command, "timeout": 10}],
+                    "hooks": [{"type": "command", "command": hook_cmd, "timeout": 10}],
                 }
-            ]
+            ],
         }
     }
-    print("Add to your agent settings (PYTHONPATH must reach this checkout):\n")
-    print(json.dumps(snippet, indent=2))
-    print(f"\nCheckout: {root}")
-    print(f"Mode:     {config.mode} (set GUARD_MODE=enforce once the ledger looks right)")
+
+
+def _merge_hooks(existing: dict, block: dict) -> dict:
+    """Add our hooks to a settings file without taking anything else out.
+
+    Whatever else is in that file was put there by someone who wanted it. The
+    corpus already carries the incident where editing a global config to install
+    tooling broke the tooling that was working; overwriting a settings file to
+    install a guard would be the same mistake with a better excuse.
+    """
+    merged = json.loads(json.dumps(existing))
+    hooks = merged.setdefault("hooks", {})
+    for event, entries in block["hooks"].items():
+        current = hooks.setdefault(event, [])
+        ours = json.dumps(entries[0], sort_keys=True)
+        if not any(json.dumps(entry, sort_keys=True) == ours for entry in current):
+            current.append(entries[0])
+    return merged
+
+
+def cmd_install(args, config: Config) -> int:
+    block = hook_settings(args.python)
+
+    if not args.write:
+        print("Add to your agent settings:\n")
+        print(json.dumps(block, indent=2))
+        print(f"\nSettings file: {args.settings}")
+        print("Write it automatically with:  guard install --write")
+        print(f"Mode:          {config.mode} (set GUARD_MODE=enforce once the ledger looks right)")
+        return 0
+
+    target = Path(args.settings).expanduser()
+    existing: dict = {}
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8") or "{}")
+        except json.JSONDecodeError:
+            print(f"{target} is not valid JSON. Refusing to touch it — fix or move it first.")
+            return 1
+        backup = target.with_suffix(f".backup-{time.strftime('%Y%m%d-%H%M%S')}.json")
+        backup.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        print(f"backed up  {backup}")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(_merge_hooks(existing, block), indent=2) + "\n", encoding="utf-8")
+    print(f"wrote      {target}")
+    print("Restart the agent for the hooks to load, then run: guard doctor")
+    return 0
+
+
+def cmd_doctor(args, config: Config) -> int:
+    """Answer the only question that matters after installing: is it actually on?"""
+    checks: list[tuple[bool, str]] = []
+
+    checks.append((sys.version_info >= (3, 11), f"python {sys.version_info.major}.{sys.version_info.minor} (needs 3.11+)"))
+
+    incidents = load(config.corpus_dir)
+    checks.append((bool(incidents), f"corpus: {len(incidents)} incident(s) at {config.corpus_dir}"))
+
+    try:
+        config.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        with config.ledger_path.open("a", encoding="utf-8"):
+            pass
+        writable = True
+    except OSError:
+        writable = False
+    checks.append((writable, f"ledger writable: {config.ledger_path}"))
+
+    probe = evaluate("Bash", {"command": "rm -rf /tmp/doctor-probe"}, config)
+    checks.append((probe.intended == DENY, f"classification: recursive delete -> {probe.intended}"))
+
+    settings = Path(args.settings).expanduser()
+    wired = False
+    if settings.is_file():
+        try:
+            text = settings.read_text(encoding="utf-8")
+            wired = "guard.hook" in text or "guard-hook" in text
+        except OSError:
+            wired = False
+    checks.append((wired, f"hook wired in {settings}"))
+
+    for ok, label in checks:
+        print(f"  {'ok  ' if ok else 'FAIL'}  {label}")
+    failed = [label for ok, label in checks if not ok]
+    if failed:
+        print(f"\n{len(failed)} check(s) failed. The guard is not protecting anything until they pass.")
+        return 1
+    print(f"\nAll checks passed. Mode: {config.mode}.")
     return 0
 
 
@@ -220,9 +332,15 @@ def build_parser() -> argparse.ArgumentParser:
     learn.add_argument("--force", action="store_true")
     learn.set_defaults(func=cmd_learn)
 
-    install = sub.add_parser("install", help="print the hook configuration snippet")
-    install.add_argument("--python", default="python")
+    install = sub.add_parser("install", help="print — or write — the hook configuration")
+    install.add_argument("--python", help="interpreter to run the hooks with (default: the installed entry points)")
+    install.add_argument("--settings", default=str(DEFAULT_SETTINGS), help="agent settings file")
+    install.add_argument("--write", action="store_true", help="merge into the settings file, after backing it up")
     install.set_defaults(func=cmd_install)
+
+    doctor = sub.add_parser("doctor", help="check that the install actually works")
+    doctor.add_argument("--settings", default=str(DEFAULT_SETTINGS))
+    doctor.set_defaults(func=cmd_doctor)
     return parser
 
 

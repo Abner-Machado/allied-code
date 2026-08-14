@@ -60,37 +60,45 @@ the guard is wrong, and change the corpus instead of disabling the guard.
 Requires Python 3.11+. No dependencies.
 
 ```bash
-git clone <this repo> ops-guard
-cd ops-guard
-python -m unittest discover -s tests      # 25 tests, ~0.1 s
+pipx install git+https://github.com/Abner-Machado/allied-code
+guard install --write     # merges the hooks into your agent settings
+guard doctor              # confirms it is actually on
 ```
 
-Wire it as a `PreToolUse` hook:
+`install --write` backs the settings file up with a timestamp before touching it,
+merges instead of replacing, and is idempotent. Without `--write` it prints the
+block for you to paste. That care is not generic caution: `corpus/` already holds
+the incident where editing a global config to install tooling broke the tooling
+that was working.
 
-```bash
-python -m guard.cli install --python /path/to/python
-```
+`guard doctor` answers the only question that matters after installing — is it on?
+It checks the interpreter, the corpus, a writable ledger, live classification, and
+whether the hook is actually wired, and exits non-zero if any of that fails.
 
-which prints the settings block:
+To work from a checkout instead, `git clone`, then
+`python -m guard.cli install --python /path/to/python`.
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit",
-        "hooks": [{ "type": "command", "command": "python -m guard.hook", "timeout": 10 }]
-      }
-    ]
-  }
-}
-```
+### The three layers
 
-The hook reads the tool call as JSON on stdin and answers with a
-`permissionDecision` of `deny`, `ask` or `defer`. Any failure inside the guard —
-bad input, missing corpus, unwritable ledger — degrades to `defer`. A guard that
-can take the session down gets uninstalled the same day, and then it protects
-nothing.
+The corpus is the same in all three places; what differs is when it arrives.
+
+| Layer | Event | Fires | Can it stop anything? |
+| --- | --- | --- | --- |
+| Standing rules | `SessionStart` | Session opens | No — injects the critical rules, once |
+| Task precedent | `UserPromptSubmit` | Task is described | No — injects what resembles the request |
+| Execution guard | `PreToolUse` | Before each tool call | Yes — `deny` / `ask` / `defer` |
+
+Installing only the last one is the common mistake. By the time `PreToolUse` sees
+a command the plan is already written and the reasoning that produced it is spent;
+the guard can only argue with a finished decision. The earlier layers change what
+gets proposed.
+
+The injection layers only ever emit text read from the corpus directory, are
+capped at 1200 characters, and fail into silence. The `PreToolUse` hook reads the
+tool call as JSON on stdin and answers with a `permissionDecision`. Any failure
+inside the guard — bad input, missing corpus, unwritable ledger — degrades to
+`defer`. A guard that can take the session down gets uninstalled the same day, and
+then it protects nothing.
 
 ## Use it
 
@@ -143,11 +151,41 @@ here is real — every incident in `corpus/` happened on the machine this was
 written on, dates included. Delete them and write your own; that is the intended
 first move.
 
+## Keep the corpus where you already write
+
+Incidents are markdown with YAML front matter, which is also what Obsidian,
+Logseq and Foam write. Point the corpus at a folder inside your vault and the
+incidents live where you already read them:
+
+```toml
+[guard]
+corpus_dir = "~/vault/Operations/Incidents"
+```
+
+A corpus in a folder nobody opens ages out of date while the guard keeps citing it
+with the same confidence. See
+[docs/pt-br/integracoes.md](docs/pt-br/integracoes.md) for the full integration
+notes, including feeding the corpus to another model before delegating.
+
 ## Known limits
 
-- Retrieval is lexical. It matches vocabulary, not meaning: an incident written
-  about "uninstalling tools" will not fire on "purging binaries" unless the words
-  overlap. Tags exist to paper over this, and they only go so far.
+- **Language.** Retrieval is lexical, so a corpus in one language does not answer
+  a request in another. Measured here: `delete tooling` scores 0.744 against the
+  matching incident; the same intent in Portuguese scores 0.000. No error, no
+  warning. Write the corpus in the language you work in.
+- Retrieval is lexical in the same way within a language. It matches vocabulary,
+  not meaning: an incident written about "uninstalling tools" will not fire on
+  "purging binaries" unless the words overlap. Tags exist to paper over this, and
+  they only go so far.
+- Scores are normalised by query weight, so they are only comparable between
+  queries of similar length — a threshold tuned on commands will not transfer to
+  prompts. See `corpus/threshold-silently-disabled-a-layer.md`; this project shot
+  itself in the foot with exactly that and the incident is in the corpus.
+- **MCP tool calls are not classified.** Classification reads shell commands and
+  file paths. A video or media MCP server — generate, render, upload, publish —
+  passes structured arguments the guard does not inspect, so those flows are
+  outside the fence today. The hazards are mapped in the integration notes; the
+  layer is not built.
 - Classification is regex over the command string. Obfuscation defeats it
   trivially (`$env:X="rm"; & $env:X -rf .`). This is a guard against accidents and
   overconfident automation, not against an adversary with shell access.
