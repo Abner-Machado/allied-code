@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package and test dependencies
+        run: |
+          pip install -e .
+          pip install pytest pytest-subtests
+      - name: Run tests
+        run: pytest -q
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cargo-cache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Format check
+        run: cargo fmt --check
+        working-directory: alliedcore
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: alliedcore
+      - name: Tests
+        run: cargo test
+        working-directory: alliedcore
+
+  integration:
+    name: Integration (dual backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cargo-cache-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build Python extension
+        run: cargo build --release --features python
+        working-directory: alliedcore
+      - name: Copy extension to repo root
+        run: cp alliedcore/target/release/liballiedcore.so ./alliedcore.so
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package and test dependencies
+        run: |
+          pip install -e .
+          pip install pytest pytest-subtests
+      - name: Run tests with Python backend
+        run: pytest -q
+        env:
+          ALLIED_BACKEND: python
+      - name: Assert the Rust backend really activated
+        env:
+          ALLIED_BACKEND: rust
+        run: |
+          python - <<'PY'
+          import alliedcore
+          from guard.backends import get_backend_info
+          info = get_backend_info()
+          print("classifier:", info.classifier, "|", info.reason)
+          print("alliedcore version:", alliedcore.__version__)
+          assert info.classifier == "rust", f"expected the Rust backend, got {info.classifier}"
+          PY
+      - name: Run tests with Rust backend
+        run: pytest -q
+        env:
+          ALLIED_BACKEND: rust
