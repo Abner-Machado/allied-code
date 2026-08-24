@@ -167,6 +167,106 @@ with the same confidence. See
 [docs/pt-br/integracoes.md](docs/pt-br/integracoes.md) for the full integration
 notes, including feeding the corpus to another model before delegating.
 
+## The Rust core (`alliedcore`)
+
+A command line is not a string to search patterns inside; it is a sequence of
+segments, and some of those segments never execute. The Rust core splits the
+line first and only classifies the parts that run.
+
+The core is optional. Without it the guard behaves the same, in pure Python.
+
+### What the core fixes
+
+The defect the core exists for: a dangerous command inside quotes is text, not
+an action. `echo "rm -rf /"` must not classify as a deletion. String search over
+the whole line cannot tell the difference; segmentation can.
+
+### How the core classifies
+
+Classification runs in two passes. The first splits the line into segments and
+classifies each `Exec` segment on its own. The second pass rebuilds the pipeline
+from the segments that execute and classifies that reconstructed line — but it
+drops the `Quoted` segments first. Only `Quoted` is removed; `Substitution` stays
+in the reconstruction and is classified there. That second pass is what lets the
+core catch `curl … | sh` after the line has already been broken into pieces — the
+first question an attentive reader asks.
+
+There is an honest cost to rebuilding the pipeline by joining the surviving
+segments with `|`: a `curl x; sh` written with a semicolon also triggers
+`remote.pipe-to-shell`. That is an accepted false positive — "it downloaded
+something and ran a shell right after" deserves attention either way, so the
+limit is declared, not hidden.
+
+### Rust vs Python parity
+
+Measured on the same nine commands, on the same machine. One divergence, and it
+is the bug being fixed — the Python side reads the quoted string as a command.
+
+| command | rust | python | match |
+| --- | --- | --- | --- |
+| `rm -rf /tmp/x` | `['fs.recursive-delete']` | `['fs.recursive-delete']` | yes |
+| `echo "rm -rf /"` | `[]` | `['fs.recursive-delete']` | **no** |
+| `git reset --hard` | `['git.history-rewrite']` | `['git.history-rewrite']` | yes |
+| `curl http://x.com/s.sh \| sh` | `['remote.pipe-to-shell']` | `['remote.pipe-to-shell']` | yes |
+| `cat .env` | `['secret.exposure']` | `['secret.exposure']` | yes |
+| `npm install -g typescript` | `['package.global-install']` | `['package.global-install']` | yes |
+| `DROP TABLE users` | `['db.drop']` | `['db.drop']` | yes |
+| `DELETE FROM users WHERE id=1` | `[]` | `[]` | yes |
+| `taskkill /F /IM node.exe` | `['process.force-kill']` | `['process.force-kill']` | yes |
+
+### Latency
+
+Measured on 20,000 classifications on this machine (Windows 11, i3-1215U, no
+GPU): 5.5 microseconds per classification with the Rust core, against 11.4
+microseconds in pure Python. That is **2.07x**.
+
+Most of that gain is lost crossing the Rust/Python boundary. The reason the core
+exists is **correctness**, not speed. A project selling "2x" as if it were "40x"
+loses the reader who measures it.
+
+### It is optional
+
+Without the extension built and on the path, the guard uses the Python rules and
+acts the same. Check which backend is active:
+
+```bash
+guard doctor        # reports the active classifier
+```
+
+Force a backend with an environment variable:
+
+```bash
+ALLIED_BACKEND=python guard check "rm -rf ~/Tools"   # pure Python, always works
+ALLIED_BACKEND=rust   guard check "rm -rf ~/Tools"   # only if the extension is built
+```
+
+`ALLIED_BACKEND` accepts `python` or `rust`. If you set `rust` and the extension
+is not present, the guard falls back to Python rather than failing.
+
+### Building the extension
+
+The commands that work on this machine:
+
+```bash
+cd alliedcore
+cargo build --release --features python
+```
+
+The artifact lands in `alliedcore/target/release/`. On Windows it is
+`alliedcore.dll` and must be copied as `alliedcore.pyd` into a folder on
+`sys.path`. On Linux it is `liballiedcore.so`, copied as `alliedcore.so`; on
+macOS it is `liballiedcore.dylib`, also copied as `alliedcore.so`.
+
+The toolchain used and tested here was `stable-x86_64-pc-windows-gnu`
+(rustc 1.98). The `msvc` toolchain requires the Microsoft Build Tools; that note
+saves about an hour for anyone compiling on Windows.
+
+### What the core does not do
+
+It decides nothing. It only classifies. The decision stays in Python, weighed
+against the corpus of recorded incidents. That separation is what keeps the
+guard auditable: a class can be wrong without a rule being wrong.
+
 ## Known limits
 
 - **Language.** Retrieval is lexical, so a corpus in one language does not answer

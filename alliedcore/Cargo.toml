@@ -1,0 +1,33 @@
+[package]
+name = "alliedcore"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Hot-path classification core for the allied-code guard"
+repository = "https://github.com/Abner-Machado/allied-code"
+
+[lib]
+name = "alliedcore"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Segment and pattern matching. `unicode` so a command with non-ASCII text does
+# not silently fall out of a class; `perf` because this runs on every tool call.
+regex = { version = "1.10", features = ["unicode", "perf"] }
+# Hazards cross the Rust/Python boundary as plain data.
+serde = { version = "1.0", features = ["derive"] }
+# MCP tool input arrives as arbitrary JSON.
+serde_json = "1.0"
+# Compile every pattern exactly once, on first use.
+once_cell = "1.19"
+# Optional: only needed to build the Python extension module. Kept optional so
+# `cargo test` links a normal binary instead of a Python extension.
+pyo3 = { version = "0.22", features = ["abi3-py311"], optional = true }
+
+[features]
+default = []
+python = ["dep:pyo3", "pyo3/extension-module"]
+
+[profile.release]
+opt-level = 3
+lto = true

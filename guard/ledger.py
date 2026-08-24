@@ -53,6 +53,7 @@ class Receipt:
     evidence: list[dict]
     reason: str
     latency_ms: float
+    retrieval: str = "skipped"
     session_id: str = ""
     tool_use_id: str = ""
     cwd: str = ""
@@ -82,6 +83,7 @@ def build(
         hazards=[h.id for h in decision.hazards],
         evidence=[{"id": hit.incident.id, "score": hit.score} for hit in decision.evidence],
         reason=redact(decision.reason),
+        retrieval=getattr(decision, "retrieval", "skipped"),
         latency_ms=round((time.perf_counter() - started) * 1000, 2),
         session_id=str(payload.get("session_id", ""))[:64],
         tool_use_id=str(payload.get("tool_use_id", ""))[:64],

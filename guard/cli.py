@@ -253,10 +253,18 @@ def cmd_install(args, config: Config) -> int:
 
 
 def cmd_doctor(args, config: Config) -> int:
-    """Answer the only question that matters after installing: is it actually on?"""
+    """Answer the only question that matters after installing: is it actually on."""
     checks: list[tuple[bool, str]] = []
 
     checks.append((sys.version_info >= (3, 11), f"python {sys.version_info.major}.{sys.version_info.minor} (needs 3.11+)"))
+
+    try:
+        from .backends import get_backend_info
+        info = get_backend_info()
+        label = f"classifier: {info.classifier} ({info.reason})"
+    except Exception:
+        label = "classifier: python (backend layer unavailable)"
+    checks.append((True, label))
 
     incidents = load(config.corpus_dir)
     checks.append((bool(incidents), f"corpus: {len(incidents)} incident(s) at {config.corpus_dir}"))

@@ -8,12 +8,14 @@ the block can go check whether the guard is right.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Config
 from .corpus import Hit, search
-from .rules import CRITICAL, HIGH, MEDIUM, Hazard, classify_command, classify_write, escalate, worst
+from .backends import classify_command, classify_write, classify_mcp
+from .rules import CRITICAL, HIGH, MEDIUM, Hazard, worst, escalate
 
 ALLOW = "allow"
 ASK = "ask"
@@ -23,6 +25,62 @@ DEFER = "defer"
 # Tool calls that carry a shell command, by tool name.
 COMMAND_TOOLS = ("Bash", "PowerShell", "BashOutput")
 WRITE_TOOLS = ("Write", "Edit", "NotebookEdit", "MultiEdit")
+
+# Keys whose value is a *target* (a path/id/url), never a credential. When an MCP
+# call comes in we only ever surface one of these, truncated, so a token, cookie
+# or session id handed as an argument can never reach the log or the search query.
+_TARGET_KEYS = ("id", "path", "file_path", "file_id", "url", "message_id", "thread_id")
+
+# Patterns that betray a secret regardless of where they show up. Anything that
+# matches is replaced with [REDACTED] before the text is written anywhere.
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # ghp_ / sk- / xox[abpr]- style issuer tokens
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}"),
+    re.compile(r"\bxox[abpr]-[A-Za-z0-9-]{10,}"),
+    # a 16+ char value glued to a credential word
+    re.compile(r"(?i)\b(key|token|secret|password|passwd)\b[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9_\-]{16,}"),
+    # Authorization / Bearer header values
+    re.compile(r"(?i)\bauthorization\b\s*[:=]\s*(?:bearer\s+)?[\"']?[A-Za-z0-9._\-]{8,}"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"),
+)
+
+
+def redact(text: str) -> str:
+    """Mask anything that looks like a secret.
+
+    Applied to the action text and to evidence before either is written to disk
+    or used as a search query. A guard that logs the secret it was meant to
+    protect is worse than no guard.
+    """
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
+
+
+def action_text(tool_name: str, tool_input: dict) -> str:
+    """The human-readable action a tool call represents.
+
+    For MCP tools we never dump the arguments — that is how a token or cookie
+    leaked in the previous build. We surface at most one short *target* drawn
+    from a closed list of keys, truncated to 80 characters, then redact it.
+    """
+    if tool_name in COMMAND_TOOLS:
+        return redact(str(tool_input.get("command", "")))
+    if tool_name in WRITE_TOOLS:
+        target = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        return redact(str(target))
+    if tool_name.startswith("mcp__"):
+        target = ""
+        for key in _TARGET_KEYS:
+            if key in tool_input:
+                target = str(tool_input[key])[:80]
+                break
+        return redact(target)
+    for key in ("command", "file_path", "path", "url", "query", "prompt"):
+        if key in tool_input:
+            return redact(str(tool_input[key]))
+    return ""
 
 
 @dataclass
@@ -35,32 +93,24 @@ class Decision:
     # What the guard would have done if it were enforcing. In observe mode this
     # differs from `decision`, and that gap is the whole point of observe mode.
     intended: str = DEFER
+    # How the precedent search turned out: "hit", "empty" or "skipped". Recorded
+    # so a silent retrieval failure is visible instead of quietly lowering friction.
+    retrieval: str = "skipped"
 
     @property
     def blocked(self) -> bool:
         return self.decision == DENY
 
 
-def action_text(tool_name: str, tool_input: dict) -> str:
-    """The human-readable action a tool call represents."""
-    if tool_name in COMMAND_TOOLS:
-        return str(tool_input.get("command", ""))
-    if tool_name in WRITE_TOOLS:
-        target = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
-        return str(target)
-    for key in ("command", "file_path", "path", "url", "query", "prompt"):
-        if key in tool_input:
-            return str(tool_input[key])
-    return ""
-
-
 def evaluate(tool_name: str, tool_input: dict, config: Config, corpus_dir: Path | None = None) -> Decision:
     text = action_text(tool_name, tool_input)
     if not text.strip():
-        return Decision(DEFER, "nothing to inspect", intended=DEFER)
+        return Decision(DEFER, "nothing to inspect", intended=DEFER, retrieval="skipped")
 
     if tool_name in WRITE_TOOLS:
         hazards = classify_write(text, config.protected_paths)
+    elif tool_name.startswith("mcp__"):
+        hazards = classify_mcp(tool_name, tool_input)
     else:
         hazards = classify_command(text)
 
@@ -70,7 +120,7 @@ def evaluate(tool_name: str, tool_input: dict, config: Config, corpus_dir: Path 
         # there is no friction to justify here — searching anyway would spend
         # milliseconds on every harmless call and print precedents nobody needs.
         intended = ALLOW if config.allow_safe else DEFER
-        return Decision(intended, "no hazard class matched", intended=intended)
+        return Decision(intended, "no hazard class matched", intended=intended, retrieval="skipped")
 
     # Two queries, best score per incident wins. The action text carries the
     # detail; the hazard vocabulary carries the meaning. A file path on its own
@@ -98,6 +148,8 @@ def evaluate(tool_name: str, tool_input: dict, config: Config, corpus_dir: Path 
     if config.mode == "observe" and intended == DENY:
         decision = ASK
 
+    retrieval = "hit" if evidence else "empty"
+
     return Decision(
         decision=decision,
         reason=explain(hazards, evidence, severity, intended, config.mode),
@@ -105,6 +157,7 @@ def evaluate(tool_name: str, tool_input: dict, config: Config, corpus_dir: Path 
         hazards=hazards,
         evidence=evidence,
         intended=intended,
+        retrieval=retrieval,
     )
 
 

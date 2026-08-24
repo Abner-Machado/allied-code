@@ -5,6 +5,18 @@ venv/
 build/
 dist/
 *.egg-info/
+.pytest_cache/
+
+# Local tooling caches, not source.
+.impeccable/
+
+# Rust build output. `target/` alone is hundreds of megabytes, and the compiled
+# extension is a per-platform artifact that has to be built, never committed.
+alliedcore/target/
+*.pyd
+*.dll
+*.so
+*.dylib
 
 # Receipts are local operational data, not source.
 ledger.jsonl
