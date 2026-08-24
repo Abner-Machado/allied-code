@@ -666,11 +666,19 @@ fn normalize_path(path: &str) -> PathBuf {
     let mut result = PathBuf::new();
     let has_drive = cfg!(windows) && path.len() >= 2 && path.chars().nth(1) == Some(':');
     let is_unc = path.starts_with("//") || path.starts_with("\\\\");
+    // A leading separator is a component in its own right. Dropping it along with
+    // the other empty parts turns every absolute POSIX path into a relative one,
+    // and the resolution that follows then answers a question about a different
+    // file — quietly, because a relative path still resolves against the working
+    // directory instead of failing.
+    let is_posix_absolute = !has_drive && !is_unc && path.starts_with('/');
     if has_drive && !components.is_empty() {
         result.push(components.remove(0));
     } else if is_unc && components.len() >= 2 {
         result.push(format!("//{}/{}", components[0], components[1]));
         components.drain(0..2);
+    } else if is_posix_absolute {
+        result.push("/");
     }
 
     for comp in components {
@@ -861,6 +869,38 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// An absolute POSIX path has to stay absolute through normalisation.
+    ///
+    /// This is a regression test for a defect that only ever showed up off
+    /// Windows: the leading separator was being dropped with the other empty
+    /// parts, so `/etc/x/.env` became `etc/x/.env`. Nothing failed loudly — the
+    /// relative path simply resolved against the working directory, and the
+    /// protected-path check then answered about a file nobody had asked about.
+    #[test]
+    fn absolute_posix_path_keeps_its_root() {
+        let normalised = normalize_path("/home/user/project/.env");
+        let flat = normalised.to_string_lossy().replace('\\', "/");
+        assert!(
+            flat.starts_with('/'),
+            "the leading separator must survive normalisation, got {normalised:?}"
+        );
+        assert!(
+            flat.ends_with("/home/user/project/.env"),
+            "unexpected normalisation: {normalised:?}"
+        );
+    }
+
+    /// The protected-path check has to fire on an absolute path, on every
+    /// platform, without needing a symlink or any privilege.
+    #[test]
+    fn absolute_path_to_a_protected_file_is_caught() {
+        let hazards = classify_write("/home/user/project/.env", &[".env".to_string()]);
+        assert!(
+            hazards.iter().any(|h| h.id == "fs.protected-write"),
+            "an absolute path into .env must be protected, got {hazards:?}"
+        );
     }
 
     /// The same idea without needing any privilege: a path that walks out of an
