@@ -671,7 +671,10 @@ mod tests {
 
     #[test]
     fn powershell_substitution_inside_double_quotes_still_runs() {
-        let segs = segments(r#"Write-Output "$(Remove-Item -Recurse -Force C:/x)""#, Shell::Powershell);
+        let segs = segments(
+            r#"Write-Output "$(Remove-Item -Recurse -Force C:/x)""#,
+            Shell::Powershell,
+        );
         let sub = segs
             .iter()
             .find(|s| s.kind == SegmentKind::Substitution)
