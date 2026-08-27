@@ -114,6 +114,126 @@ fn push_trimmed(
     out.push(Segment::new(kind, trimmed.to_string(), (s, e), shell));
 }
 
+/// Push a quoted run, splitting out the parts of it that still execute.
+///
+/// A shell expands command substitution inside a double-quoted run — `"$(id)"`
+/// runs `id` — while a single-quoted run takes no expansion at all. Treating both
+/// the same way is what let `echo "$(rm -rf /tmp/x)"` read as literal text. So an
+/// expanding run is a container, not a leaf: the literal stretches leave as
+/// `Quoted` and the `$( … )` and backtick runs inside them leave as
+/// `Substitution`, which is the kind the second pass keeps.
+///
+/// The rule is the same in both shells, because the quote character decides it:
+/// POSIX `'…'` and PowerShell `'…'` and `@'…'@` are literal, POSIX `"…"` and
+/// PowerShell `"…"` and `@"…"@` expand.
+///
+/// A bare `$name` inside a run is deliberately left alone. The top-level branch
+/// splits one out because `iex $env:payload` is a call whose argument the guard
+/// cannot read; inside a string the variable is a value, and splitting it would
+/// make every `"total: $10"` look like indirection.
+fn push_quoted_run(
+    out: &mut Vec<Segment>,
+    input: &str,
+    start: usize,
+    stop: usize,
+    content: (usize, usize),
+    expands: bool,
+    shell: Shell,
+) {
+    if !expands {
+        push_trimmed(out, input, start, stop, SegmentKind::Quoted, shell);
+        return;
+    }
+
+    let (content_start, content_end) = content;
+    if content_start >= content_end || content_end > input.len() {
+        push_trimmed(out, input, start, stop, SegmentKind::Quoted, shell);
+        return;
+    }
+
+    let chars: Vec<(usize, char)> = input[content_start..content_end]
+        .char_indices()
+        .map(|(offset, c)| (content_start + offset, c))
+        .collect();
+    let n = chars.len();
+    let end_byte = |k: usize| -> usize {
+        if k < n {
+            chars[k].0
+        } else {
+            content_end
+        }
+    };
+
+    // The literal text before the current substitution, starting at the opening
+    // delimiter so the quote itself is never lost.
+    let mut literal_start = start;
+    let mut i = 0usize;
+
+    while i < n {
+        let (pos, c) = chars[i];
+
+        // An escaped `$` or backtick does not expand.
+        let escape = if shell == Shell::Posix { '\\' } else { '`' };
+        if c == escape {
+            i += 2;
+            continue;
+        }
+
+        if c == '$' && chars.get(i + 1).map(|(_, ch)| *ch) == Some('(') {
+            let mut depth = 0usize;
+            let mut j = i + 1;
+            let mut sub_stop = content_end;
+            while j < n {
+                match chars[j].1 {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            sub_stop = end_byte(j + 1);
+                            j += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            push_trimmed(out, input, literal_start, pos, SegmentKind::Quoted, shell);
+            push_trimmed(out, input, pos, sub_stop, SegmentKind::Substitution, shell);
+            literal_start = sub_stop;
+            i = j;
+            continue;
+        }
+
+        // Only POSIX: in PowerShell the backtick is the escape, handled above.
+        if shell == Shell::Posix && c == '`' {
+            let mut j = i + 1;
+            let mut sub_stop = content_end;
+            while j < n {
+                if chars[j].1 == '\\' {
+                    j += 2;
+                    continue;
+                }
+                if chars[j].1 == '`' {
+                    sub_stop = end_byte(j + 1);
+                    j += 1;
+                    break;
+                }
+                j += 1;
+            }
+            push_trimmed(out, input, literal_start, pos, SegmentKind::Quoted, shell);
+            push_trimmed(out, input, pos, sub_stop, SegmentKind::Substitution, shell);
+            literal_start = sub_stop;
+            i = j;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    push_trimmed(out, input, literal_start, stop, SegmentKind::Quoted, shell);
+}
+
 /// Split a command line into the pieces that actually run, and the pieces that
 /// only look like they do.
 ///
@@ -158,15 +278,26 @@ pub fn segments(input: &str, shell: Shell) -> Vec<Segment> {
             push_trimmed(&mut out, input, exec_start, pos, SegmentKind::Exec, shell);
             let mut j = i + 2;
             let mut stop = input.len();
+            let content_start = end_byte(i + 2);
+            let mut content_end = input.len();
             while j < n {
                 if chars[j].1 == quote && chars.get(j + 1).map(|(_, ch)| *ch) == Some('@') {
+                    content_end = chars[j].0;
                     stop = end_byte(j + 2);
                     j += 2;
                     break;
                 }
                 j += 1;
             }
-            push_trimmed(&mut out, input, pos, stop, SegmentKind::Quoted, shell);
+            push_quoted_run(
+                &mut out,
+                input,
+                pos,
+                stop,
+                (content_start, content_end),
+                quote == '"',
+                shell,
+            );
             i = j;
             exec_start = stop;
             continue;
@@ -253,6 +384,8 @@ pub fn segments(input: &str, shell: Shell) -> Vec<Segment> {
             let escape = if shell == Shell::Posix { '\\' } else { '`' };
             let mut j = i + 1;
             let mut stop = input.len();
+            let content_start = end_byte(i + 1);
+            let mut content_end = input.len();
             while j < n {
                 let ch = chars[j].1;
                 // A single-quoted run takes no escapes in either shell.
@@ -261,13 +394,22 @@ pub fn segments(input: &str, shell: Shell) -> Vec<Segment> {
                     continue;
                 }
                 if ch == c {
+                    content_end = chars[j].0;
                     stop = end_byte(j + 1);
                     j += 1;
                     break;
                 }
                 j += 1;
             }
-            push_trimmed(&mut out, input, pos, stop, SegmentKind::Quoted, shell);
+            push_quoted_run(
+                &mut out,
+                input,
+                pos,
+                stop,
+                (content_start, content_end),
+                c == '"',
+                shell,
+            );
             i = j;
             exec_start = stop;
             continue;
@@ -484,5 +626,73 @@ mod tests {
         let segs = segments(";;echo hello;;", Shell::Posix);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "echo hello");
+    }
+
+    // --- Expansion inside a quoted run ------------------------------------
+    // A double-quoted run expands command substitution; a single-quoted run does
+    // not. Reading both as literal text is how `echo "$(rm -rf /tmp/x)"` used to
+    // leave the lexer with nothing to classify.
+
+    #[test]
+    fn substitution_inside_double_quotes_still_runs() {
+        let segs = segments(r#"echo "$(rm -rf /tmp/x)""#, Shell::Posix);
+        let sub = segs
+            .iter()
+            .find(|s| s.kind == SegmentKind::Substitution)
+            .expect("the substitution executes and must be its own segment");
+        assert_eq!(sub.text, "$(rm -rf /tmp/x)");
+    }
+
+    #[test]
+    fn substitution_inside_single_quotes_stays_literal() {
+        let segs = segments(r#"echo '$(rm -rf /tmp/x)'"#, Shell::Posix);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[1].kind, SegmentKind::Quoted);
+        assert_eq!(segs[1].text, r#"'$(rm -rf /tmp/x)'"#);
+    }
+
+    #[test]
+    fn backtick_inside_double_quotes_still_runs() {
+        let segs = segments("echo \"`rm -rf /tmp/x`\"", Shell::Posix);
+        let sub = segs
+            .iter()
+            .find(|s| s.kind == SegmentKind::Substitution)
+            .expect("a backtick run inside double quotes executes");
+        assert_eq!(sub.text, "`rm -rf /tmp/x`");
+    }
+
+    #[test]
+    fn quoted_text_without_expansion_is_still_one_literal_segment() {
+        let segs = segments(r#"echo "rm -rf /""#, Shell::Posix);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[1].kind, SegmentKind::Quoted);
+        assert!(!segs.iter().any(|s| s.kind == SegmentKind::Substitution));
+    }
+
+    #[test]
+    fn powershell_substitution_inside_double_quotes_still_runs() {
+        let segs = segments(r#"Write-Output "$(Remove-Item -Recurse -Force C:/x)""#, Shell::Powershell);
+        let sub = segs
+            .iter()
+            .find(|s| s.kind == SegmentKind::Substitution)
+            .expect("PowerShell expands $( ) inside double quotes");
+        assert_eq!(sub.text, "$(Remove-Item -Recurse -Force C:/x)");
+    }
+
+    #[test]
+    fn powershell_expandable_here_string_still_runs() {
+        let line = "Write-Output @\"\n$(Remove-Item -Recurse -Force C:/x)\n\"@";
+        let segs = segments(line, Shell::Powershell);
+        assert!(
+            segs.iter().any(|s| s.kind == SegmentKind::Substitution),
+            "@\" … \"@ expands, so what it expands has to be classified"
+        );
+    }
+
+    #[test]
+    fn powershell_literal_here_string_stays_literal() {
+        let line = "Write-Output @'\n$(Remove-Item -Recurse -Force C:/x)\n'@";
+        let segs = segments(line, Shell::Powershell);
+        assert!(!segs.iter().any(|s| s.kind == SegmentKind::Substitution));
     }
 }
