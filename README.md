@@ -191,6 +191,15 @@ in the reconstruction and is classified there. That second pass is what lets the
 core catch `curl … | sh` after the line has already been broken into pieces — the
 first question an attentive reader asks.
 
+Which quote a run uses decides whether its contents are text or action, so the
+split has to know the difference. A double-quoted run expands command
+substitution — `echo "$(id)"` runs `id` — while a single-quoted run expands
+nothing. An expanding run is therefore a container, not a leaf: the literal
+stretches leave as `Quoted` and the `$( … )` and backtick runs inside them leave
+as `Substitution`. The same holds in PowerShell, where `"…"` and `@"…"@` expand
+while `'…'` and `@'…'@` do not. A bare `$name` inside a run is left alone: inside
+a string it is a value, not a call whose argument the guard cannot read.
+
 There is an honest cost to rebuilding the pipeline by joining the surviving
 segments with `|`: a `curl x; sh` written with a semicolon also triggers
 `remote.pipe-to-shell`. That is an accepted false positive — "it downloaded
