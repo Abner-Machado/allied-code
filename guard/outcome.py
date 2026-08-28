@@ -114,15 +114,19 @@ def verdict(rows: list[dict], now: datetime | None = None) -> Verdict:
     # `tool_use_id` identifies the exact call and is preferred when the runtime
     # sends it on both events. The hash is the fallback for the ones that do not,
     # and it is what keeps two identical commands from pairing with each other.
-    executed: dict[str, int] = {}
     exact: set[str] = set()
+    loose: dict[str, int] = {}
     for row in rows:
         if row.get("kind") == "outcome":
             out.outcomes += 1
-            key = row.get("key", "")
-            executed[key] = executed.get(key, 0) + 1
             if row.get("tool_use_id"):
                 exact.add(row["tool_use_id"])
+            else:
+                # No call id from this runtime: fall back to counting by hash.
+                # Kept separate so an outcome already claimed by its exact id can
+                # never be spent a second time on a look-alike command.
+                key = row.get("key", "")
+                loose[key] = loose.get(key, 0) + 1
 
     for row in rows:
         if row.get("kind", "decision") != "decision":
@@ -136,11 +140,10 @@ def verdict(rows: list[dict], now: datetime | None = None) -> Verdict:
         stamp = _parse_ts(row.get("ts", ""))
         if call_id and call_id in exact:
             exact.discard(call_id)
-            executed[key] = max(executed.get(key, 0) - 1, 0)
             fate = "proceeded"
             out.proceeded += 1
-        elif executed.get(key, 0) > 0:
-            executed[key] -= 1
+        elif loose.get(key, 0) > 0:
+            loose[key] -= 1
             fate = "proceeded"
             out.proceeded += 1
         elif stamp is not None and (now - stamp).total_seconds() < GRACE_SECONDS:

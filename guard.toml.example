@@ -27,3 +27,8 @@ protected_paths = [
     "credentials.json",
     "id_rsa",
 ]
+
+# Callers held one severity level higher than the orchestrator, as glob patterns.
+# Escalation only: naming an agent here can never grant it anything. The name
+# arrives on the hook payload, or from GUARD_AGENT / GUARD_STRICT_AGENTS.
+strict_agents = []

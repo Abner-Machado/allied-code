@@ -352,10 +352,12 @@ def cmd_doctor(args, config: Config) -> int:
 
     settings = Path(args.settings).expanduser()
     wired = False
+    outcome_wired = False
     if settings.is_file():
         try:
             text = settings.read_text(encoding="utf-8")
             wired = "guard.hook" in text or "guard-hook" in text
+            outcome_wired = "guard.outcome" in text or "guard-outcome" in text
         except OSError:
             wired = False
     checks.append((wired, f"hook wired in {settings}"))
@@ -366,6 +368,11 @@ def cmd_doctor(args, config: Config) -> int:
     if failed:
         print(f"\n{len(failed)} check(s) failed. The guard is not protecting anything until they pass.")
         return 1
+    if wired and not outcome_wired:
+        # Not a failure: the guard protects fine without it. It just stays unable
+        # to tell whether any of that protection was ever worth anything.
+        print("\nnote: PostToolUse is not wired, so `guard stats` cannot tell you")
+        print("      which of its blocks you agreed with. `guard install --write` adds it.")
     print(f"\nAll checks passed. Mode: {config.mode}.")
     return 0
 

@@ -78,17 +78,20 @@ whether the hook is actually wired, and exits non-zero if any of that fails.
 To work from a checkout instead, `git clone`, then
 `python -m guard.cli install --python /path/to/python`.
 
-### The three layers
+### The four layers
 
-The corpus is the same in all three places; what differs is when it arrives.
+The corpus is the same in the three places it is read; what differs is when it
+arrives. The fourth reads nothing and writes one line — see
+[the part where it learns from you](#the-part-where-it-learns-from-you).
 
 | Layer | Event | Fires | Can it stop anything? |
 | --- | --- | --- | --- |
 | Standing rules | `SessionStart` | Session opens | No — injects the critical rules, once |
 | Task precedent | `UserPromptSubmit` | Task is described | No — injects what resembles the request |
 | Execution guard | `PreToolUse` | Before each tool call | Yes — `deny` / `ask` / `defer` |
+| Outcome | `PostToolUse` | After a call actually ran | No — it records what you decided |
 
-Installing only the last one is the common mistake. By the time `PreToolUse` sees
+Installing only the execution guard is the common mistake. By the time `PreToolUse` sees
 a command the plan is already written and the reasoning that produced it is spent;
 the guard can only argue with a finished decision. The earlier layers change what
 gets proposed.
@@ -107,7 +110,7 @@ guard check "rm -rf ~/Tools"            # evaluate one action, without running i
 guard check "git push --force" --json   # machine-readable, exit 1 when denied
 guard brief "rotate the API keys"       # what to know before starting
 guard ledger --last 20 -v               # the receipts
-guard stats                             # decisions, latency, most-cited incidents
+guard stats                             # decisions, latency, and how often you agreed
 guard learn --id truncated-write \
       --title "Output hit the ceiling and the cut was never noticed" \
       --rule "Check the stop reason before treating output as complete" \
@@ -122,6 +125,61 @@ against work you know was fine. Then set `mode = "enforce"` in `guard.toml` (or
 `GUARD_MODE=enforce`).
 
 Shipping straight to enforce is how guards get a reputation for being in the way.
+
+## The part where it learns from you
+
+The guard asks. Until this version it never learned the answer.
+
+The answer was always there. `PostToolUse` fires **only after a tool succeeds**.
+So a call the guard questioned and you refused leaves no line at all, and a call
+you approved leaves one. Silence is the label. Nothing is inferred from a model,
+nothing is sent anywhere, and nothing new runs before your command — the outcome
+line is written after the tool already ran.
+
+That turns the ledger into the only number a guard cannot fake:
+
+```
+verdict       31 call(s) questioned
+  stopped       24  77%  you agreed with the guard
+  overruled      7  23%  you ran it anyway
+noise         cited repeatedly, never once stopped you:
+  pinned-model-id-vanished
+              that incident is firing where it does not belong.
+              edit the file or delete it — the guard will not do it for you.
+```
+
+Read the last block again. The guard is telling you which of *its own rules* is
+wasting your attention, and it is naming the file. Every other guard makes you
+discover that by getting annoyed enough to disable the whole thing.
+
+**It never acts on this.** Being overruled a hundred times does not soften a
+single decision. A guard that relaxes because it was argued with is a guard that
+can be argued with, and that failure is silent. The verdict produces a report;
+lowering friction stays something a human does, in the corpus, as a commit you
+can read months later. Precedent still escalates and never de-escalates.
+
+## Delegated agents run under a lower ceiling
+
+The orchestrator and the producer it delegates to share a shell and, until now,
+got the same answer. They should not. The orchestrator picked the command; the
+subagent was handed a narrow mandate, and `corpus/delegated-agent-deleted-tooling.md`
+is what happens when it steps outside it.
+
+```toml
+[guard]
+strict_agents = ["produtor-*", "opencode/*", "hermes/*"]
+```
+
+Every hazard class is escalated one level for those callers: what the
+orchestrator would be *asked* about, a producer is *denied*. It only ever raises
+— naming an agent can never grant it anything — so the list cannot quietly become
+an allowlist. `GUARD_STRICT_AGENTS` does the same for scripts that launch
+producers and cannot edit a config file, and the caller's name comes from the
+hook payload or `GUARD_AGENT`.
+
+```bash
+guard check "npm install -g typescript" --agent produtor-haiku
+```
 
 ## The corpus
 

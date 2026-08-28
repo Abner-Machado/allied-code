@@ -100,13 +100,51 @@ scores, latency, session and agent identifiers. Reasons for keeping them:
 Redaction runs before anything is written. A guard that leaks the credential it
 was protecting is worse than no guard.
 
+## The feedback the guard already had and was throwing away
+
+A guard has no ground truth. It cannot tell a good block from a bad one, so it
+either gets tuned by whoever wrote it or not at all.
+
+Except the ground truth is generated every day, by the person being protected.
+`PostToolUse` fires only after a tool succeeds. So for every call the guard
+questioned there are exactly two possible worlds: an outcome line exists, meaning
+the human overruled the guard, or no line was ever written, meaning the human
+agreed with it. **The absence of a record is the record.** No model, no network,
+no extra prompt, and nothing added to the pre-execution budget, because the
+outcome line is written after the call already ran.
+
+What that buys, in order of how much it matters:
+
+1. A hit rate. `guard stats` reports agreed / overruled, which is the only claim
+   about a guard that is not the guard's own opinion of itself.
+2. Per-incident attribution. An incident cited nine times that never once stopped
+   anybody is not a rule, it is noise — and the report names the file to edit.
+3. A path to `guard learn --from-ledger`: the guard drafting a corpus change and
+   a human committing it.
+
+The thing it deliberately does **not** buy is automatic relaxation. Being
+overruled is exactly the input an attacker — or an impatient afternoon — would
+use to talk the guard down, and the resulting weakening would be invisible. So
+the loop stops at a report. The corpus is edited by a person, in git, where the
+change has an author and a date.
+
+## Per-agent ceilings
+
+The `agent` field has been in every receipt since the first version. It now does
+something: callers matching `strict_agents` get every hazard class escalated one
+level, because a delegated producer working from a narrow mandate has less
+license than the orchestrator that chose the command. The direction is one-way.
+Naming an agent can only raise its floor, never lower it — otherwise the config
+becomes an allowlist keyed on a string the caller supplies.
+
 ## Direction
 
 1. **Operations RAG.** The corpus is already retrieval over operational memory.
    The next step is ingesting the ledger back into it: a receipt that led to a
-   real incident becomes an incident file, with `guard learn --from-ledger`.
-2. **Orchestration.** Briefing on delegation, receipts tagged per agent, and a
-   per-agent policy — a subagent with a narrow mandate should hit a lower ceiling
-   than the orchestrator, and the ledger already records who asked.
+   real incident becomes an incident file, with `guard learn --from-ledger`. The
+   outcome loop is what makes that draft worth reading — it can point at the
+   calls you refused that no incident explains yet.
+2. **Orchestration.** Briefing on delegation, and per-agent policy beyond a
+   single escalation step.
 3. **Better recall without a service.** Synonym expansion over tags before
    anything heavier gets considered.
