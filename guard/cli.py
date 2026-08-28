@@ -25,6 +25,7 @@ from .config import Config
 from .corpus import load, search
 from .decide import DENY, evaluate
 from .ledger import build, read, redact
+from .outcome import Verdict, noise, verdict
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -96,8 +97,18 @@ def cmd_brief(args, config: Config) -> int:
     return 0
 
 
+def _decisions(rows: list[dict]) -> list[dict]:
+    """Only the decision receipts.
+
+    The ledger carries outcome lines too since the guard started recording
+    whether a questioned call actually ran. Rows written before that field
+    existed have no `kind` and are decisions.
+    """
+    return [r for r in rows if r.get("kind", "decision") == "decision"]
+
+
 def cmd_ledger(args, config: Config) -> int:
-    rows = read(config.ledger_path, limit=args.last)
+    rows = _decisions(read(config.ledger_path))[-args.last :] if args.last else _decisions(read(config.ledger_path))
     if not rows:
         print(f"No receipts yet at {config.ledger_path}")
         return 0
@@ -110,7 +121,8 @@ def cmd_ledger(args, config: Config) -> int:
 
 
 def cmd_stats(args, config: Config) -> int:
-    rows = read(config.ledger_path)
+    all_rows = read(config.ledger_path)
+    rows = _decisions(all_rows)
     if not rows:
         print("No receipts yet.")
         return 0
@@ -127,14 +139,52 @@ def cmd_stats(args, config: Config) -> int:
         print("top hazards")
         for name, count in hazards.most_common(5):
             print(f"  {count:>4}  {name}")
+    result = verdict(all_rows)
     if cited:
         print("most cited incidents")
         for name, count in cited.most_common(5):
-            print(f"  {count:>4}  {name}")
+            tally = result.incidents.get(name)
+            fate = ""
+            if result.wired and tally is not None:
+                fate = f"   stopped {tally.stopped}  overruled {tally.proceeded}"
+            print(f"  {count:>4}  {name}{fate}")
     unused = [i.id for i in load(config.corpus_dir) if i.id not in cited]
     if unused:
         print(f"never cited   {', '.join(unused)}")
+
+    _print_verdict(result)
     return 0
+
+
+def _print_verdict(result: Verdict) -> None:
+    """How often the person being protected agreed with the guard.
+
+    Every other number here is the guard grading its own homework: how fast it
+    was, how often it fired, what it cited. This is the only one measured against
+    somebody else's behaviour, which is why it is the one worth reading.
+    """
+    if not result.wired:
+        print("\nverdict       no outcome receipts yet — PostToolUse is not wired.")
+        print("              guard install --write   (then work for a week)")
+        return
+
+    print(f"\nverdict       {result.questioned} call(s) questioned")
+    agreement = result.agreement
+    if agreement is None:
+        print("              nothing settled yet")
+    else:
+        print(f"  stopped     {result.stopped:>4}  {agreement * 100:.0f}%  you agreed with the guard")
+        print(f"  overruled   {result.proceeded:>4}  {(1 - agreement) * 100:.0f}%  you ran it anyway")
+    if result.pending:
+        print(f"  pending     {result.pending:>4}        too recent to call")
+
+    loud = noise(result.incidents)
+    if loud:
+        print("noise         cited repeatedly, never once stopped you:")
+        for name in loud:
+            print(f"  {name}")
+        print("              that incident is firing where it does not belong.")
+        print("              edit the file or delete it — the guard will not do it for you.")
 
 
 def cmd_learn(args, config: Config) -> int:
