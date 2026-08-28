@@ -1,4 +1,4 @@
-<img src="assets/social-preview.png" alt="Allied Code" width="880">
+<img src="assets/hero.png" alt="Allied Code — a guard that learns from what you actually did" width="880">
 
 # Allied Code
 
@@ -204,10 +204,14 @@ source: local-incident
 ```
 
 The `rule` line is what gets quoted when the guard blocks. The prose is what
-convinces you months later that the rule was worth having. The corpus shipped
-here is real — every incident in `corpus/` happened on the machine this was
-written on, dates included. Delete them and write your own; that is the intended
-first move.
+convinces you months later that the rule was worth having.
+
+The `source` line says where an incident came from, and it is not decoration.
+`source: local-incident` means it happened on the machine this was written on,
+dates included. `source: illustrative` means it is a hazard shape written to give
+a new install something to retrieve on day one — it reads like a real incident
+because that is the format, and it is labelled so nobody mistakes it for one.
+Delete them and write your own; that is the intended first move.
 
 ## Keep the corpus where you already write
 
@@ -339,7 +343,9 @@ guard auditable: a class can be wrong without a rule being wrong.
 - **Language.** Retrieval is lexical, so a corpus in one language does not answer
   a request in another. Measured here: `delete tooling` scores 0.744 against the
   matching incident; the same intent in Portuguese scores 0.000. No error, no
-  warning. Write the corpus in the language you work in.
+  warning. The shipped corpus was mixed-language for exactly one release, and six
+  incidents were unreachable the whole time — it is English-only now for that
+  reason. Write the corpus in the language you work in, and only that one.
 - Retrieval is lexical in the same way within a language. It matches vocabulary,
   not meaning: an incident written about "uninstalling tools" will not fire on
   "purging binaries" unless the words overlap. Tags exist to paper over this, and
@@ -361,6 +367,17 @@ guard auditable: a class can be wrong without a rule being wrong.
   not required to reach it.
 - Only tool calls the hook matcher sees are inspected. Anything a process spawns
   afterwards is outside the fence.
+
+## Authorship
+
+Written and maintained by **Abner Machado**. The design decisions, the invariants
+and the calls about what does not get built are his.
+
+Claude (Anthropic) worked on it with him as a pair: arguing the design, writing
+code and tests under review, and finding the defects named in the commit history.
+Every line here was read and accepted by a human before it shipped. Saying so
+costs nothing and makes the provenance of the code checkable, which is the same
+argument the corpus makes about incidents.
 
 ## License
 
