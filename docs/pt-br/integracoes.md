@@ -1,6 +1,7 @@
 # Allied Code — integrações
 
-Este documento cobre as três camadas em que o corpus de incidentes é consultado,
+Este documento cobre as quatro camadas de hook — três em que o corpus é consultado
+e uma que só registra o que aconteceu depois —,
 como manter esse corpus dentro de um vault do Obsidian, como entregá-lo a outro
 modelo, e o que ainda **não** existe.
 
@@ -25,7 +26,9 @@ lista de recursos.
 | Corpus dentro do Obsidian | **Sim, para quem já tem vault** | Se você não mantém notas, isso não muda nada. Se mantém, o corpus deixa de ser mais uma pasta órfã que envelhece sem ninguém abrir. |
 | Briefing para outro modelo | **Parcial** | Útil para quem delega tarefa a subagente. Sozinho não resolve 30% de nada — é encanamento para o item acima. |
 | Camada de MCP de vídeo | **Não — não existe** | Documentada abaixo como risco mapeado e não implementado. Não conte com ela. |
-| Corpus em português | **Não ainda** | Limitação medida, com número, na seção *Limites honestos*. É o problema mais sério desta lista para quem trabalha em português. |
+| Corpus em português | **Sim, se for só ele** | Escreva o corpus inteiro no seu idioma. Misturar idiomas foi medido e é o pior caso: os incidentes do idioma errado ficam mudos, sem erro e sem aviso. Detalhe na seção *Limites honestos*. |
+| Loop de desfecho | **Sim** | Quem quer saber se o guard acerta. O `PostToolUse` só dispara quando a ferramenta executa, então chamada questionada sem essa linha é você tendo recusado. O guard passa a medir a própria taxa de acerto contra o seu comportamento. |
+| Teto por agente delegado | **Sim, para quem orquestra** | Produtor delegado (opencode, Hermes, subagente) sobe um nível de severidade em relação ao orquestrador. Só sobe: nomear um agente nunca libera nada. |
 
 ---
 
@@ -56,7 +59,7 @@ Rode assim por uma semana, leia `guard stats` e só então mude para `enforce`.
 
 ---
 
-## As três camadas
+## As quatro camadas
 
 O corpus é o mesmo nos três pontos. O que muda é o instante em que ele chega.
 
@@ -65,6 +68,7 @@ O corpus é o mesmo nos três pontos. O que muda é o instante em que ele chega.
 | Regras permanentes | `SessionStart` | Ao abrir a sessão | Injeta as regras de severidade crítica. Custo pago uma vez. |
 | Precedente da tarefa | `UserPromptSubmit` | Quando a tarefa é descrita | Injeta os incidentes parecidos com o pedido, antes de o plano existir. |
 | Guarda de execução | `PreToolUse` | Antes de cada chamada de ferramenta | Devolve `deny`, `ask` ou `defer`. É a única que interrompe. |
+| Desfecho | `PostToolUse` | Depois de a chamada ter executado | Não decide nada. Grava uma linha dizendo que executou — e a ausência dela é você tendo recusado. |
 
 Elas não são redundantes, e instalar só a última é o erro comum. Quando o
 `PreToolUse` vê o comando, o plano já foi escrito e o raciocínio que o produziu já
@@ -183,6 +187,55 @@ regras a um subagente não garante que ele as siga. O que fecha o ciclo é o
 
 ---
 
+## O loop de desfecho: o guard aprendendo com o que você fez
+
+O `PostToolUse` do Claude Code **só dispara quando a ferramenta executa**. Isso
+dá um rótulo de graça, sem modelo e sem rede:
+
+- chamada questionada **com** linha de desfecho = você aprovou, ou seja, o guard
+  foi atropelado;
+- chamada questionada **sem** linha de desfecho = você recusou, ou seja, o guard
+  acertou.
+
+A ausência do registro é o registro. `guard stats` passa a mostrar a única
+métrica que um guard não consegue falsificar — quantas vezes a pessoa protegida
+concordou com ele — e, por incidente, quais regras foram citadas várias vezes e
+nunca pararam nada. Essas são ruído, e o relatório diz o nome do arquivo.
+
+O loop **não altera decisão nenhuma**. Ser atropelado cem vezes não afrouxa uma
+única classificação. Guard que relaxa porque foi contrariado é guard que se
+convence, e o enfraquecimento seria invisível. Quem desescala é uma pessoa,
+editando o corpus, em commit com autor e data.
+
+```bash
+guard stats     # veredito: parou / atropelou / ruído por incidente
+```
+
+---
+
+## Teto por agente delegado
+
+O campo `agent` sempre esteve no receipt. Agora ele faz algo:
+
+```toml
+[guard]
+strict_agents = ["produtor-*", "opencode/*", "hermes/*"]
+```
+
+Quem casar com esses padrões tem toda classe de risco escalada em um nível: o que
+o orquestrador seria *perguntado*, o produtor delegado é *negado*. `GUARD_STRICT_AGENTS`
+faz o mesmo por variável de ambiente, para script que lança produtor e não tem
+como editar arquivo de configuração.
+
+A direção é de mão única. Nomear um agente só levanta o piso dele, nunca abaixa —
+senão a configuração viraria allowlist com chave que o próprio chamador escolhe.
+
+```bash
+guard check "npm install -g typescript" --agent produtor-haiku
+```
+
+---
+
 ## Limites honestos
 
 **Idioma. Este é o limite mais sério.** A recuperação é lexical: casa vocabulário,
@@ -196,10 +249,15 @@ português. Medido neste corpus:
 
 Mesma intenção, mesmo incidente, e o pedido em português não recupera nada — sem
 erro, sem aviso. Se você trabalha em português, **escreva o corpus em português**,
-ou aceite que as camadas de injeção ficarão mudas. Misturar os dois idiomas no
-mesmo corpus funciona, mas cada incidente só é recuperado no idioma em que foi
-escrito. Tradução automática do corpus não está implementada e não deve ser
-presumida.
+ou aceite que as camadas de injeção ficarão mudas.
+
+Misturar os dois idiomas no mesmo corpus é o pior dos casos, e este projeto pagou
+para aprender: por um release o corpus distribuído tinha seis incidentes em
+português enquanto toda consulta que o guard monta é em inglês. Os seis nunca
+foram recuperados uma única vez. Nada falhou, nada avisou, e o `guard stats` só
+mostrava que eles nunca tinham sido citados. O corpus distribuído hoje é
+inteiramente em inglês por causa disso. Tradução automática do corpus não está
+implementada e não deve ser presumida.
 
 **Classificação é regex sobre a string do comando.** Ofuscação derrota
 trivialmente. Isto é proteção contra acidente e automação confiante demais, não
