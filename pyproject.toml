@@ -26,6 +26,7 @@ guard = "guard.cli:main"
 # working directory works on the machine it was written on and nowhere else.
 guard-hook = "guard.hook:main"
 guard-inject = "guard.inject:main"
+guard-outcome = "guard.outcome:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["guard"]

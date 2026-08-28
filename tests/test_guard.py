@@ -162,9 +162,12 @@ class TestInjection(unittest.TestCase):
 class TestInstallMerge(unittest.TestCase):
     """Installing must not be able to cost the user a setting they already had."""
 
-    def test_all_three_layers_are_offered(self):
+    def test_all_four_layers_are_offered(self):
         events = cli.hook_settings("python")["hooks"]
-        self.assertEqual(set(events), {"SessionStart", "UserPromptSubmit", "PreToolUse"})
+        self.assertEqual(
+            set(events),
+            {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"},
+        )
 
     def test_unrelated_settings_survive(self):
         existing = {"permissions": {"allow": ["Bash(git status)"]}, "model": "opus"}

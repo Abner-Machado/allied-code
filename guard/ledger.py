@@ -11,6 +11,7 @@ was protecting is worse than no guard.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -40,6 +41,18 @@ def redact(text: str) -> str:
     return text
 
 
+def correlation_key(session_id: str, tool: str, action: str) -> str:
+    """The identifier that lets a decision be paired with what happened next.
+
+    `tool_use_id` would be the obvious key, but it is not guaranteed to arrive on
+    both hook events, and a key that is empty half the time silently pairs
+    everything with everything. Hashing the three things both events do carry
+    survives that. Two identical commands in one session collide on purpose: they
+    are counted, not identified.
+    """
+    return hashlib.sha1(f"{session_id}|{tool}|{action}".encode("utf-8")).hexdigest()[:12]
+
+
 @dataclass
 class Receipt:
     ts: str
@@ -58,6 +71,12 @@ class Receipt:
     tool_use_id: str = ""
     cwd: str = ""
     agent: str = ""
+    # "decision" here, "outcome" on the line written after the tool ran. Receipts
+    # written before this field existed have no `kind` and are read as decisions.
+    kind: str = "decision"
+    # Pairs this decision with the outcome line for the same call. See
+    # `correlation_key`.
+    key: str = ""
 
     def to_json(self) -> str:
         return json.dumps(self.__dict__, ensure_ascii=False)
@@ -72,10 +91,12 @@ def build(
     payload: dict | None = None,
 ) -> Receipt:
     payload = payload or {}
+    session_id = str(payload.get("session_id", ""))[:64]
+    redacted = redact(action)
     return Receipt(
         ts=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         tool=tool,
-        action=redact(action),
+        action=redacted,
         decision=decision.decision,
         intended=decision.intended,
         mode=mode,
@@ -85,10 +106,11 @@ def build(
         reason=redact(decision.reason),
         retrieval=getattr(decision, "retrieval", "skipped"),
         latency_ms=round((time.perf_counter() - started) * 1000, 2),
-        session_id=str(payload.get("session_id", ""))[:64],
+        session_id=session_id,
         tool_use_id=str(payload.get("tool_use_id", ""))[:64],
         cwd=str(payload.get("cwd", ""))[:200],
         agent=str(payload.get("agent") or os.environ.get("GUARD_AGENT", ""))[:64],
+        key=correlation_key(session_id, tool, redacted),
     )
 
 

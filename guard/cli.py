@@ -165,8 +165,8 @@ def cmd_learn(args, config: Config) -> int:
     return 0
 
 
-def _commands(python: str | None) -> tuple[str, str]:
-    """The two hook commands, preferring the installed entry points.
+def _commands(python: str | None) -> tuple[str, str, str]:
+    """The three hook commands, preferring the installed entry points.
 
     After `pip install` the console scripts are on PATH and the settings file can
     stay free of interpreter paths. Running straight from a checkout there are no
@@ -174,9 +174,13 @@ def _commands(python: str | None) -> tuple[str, str]:
     hook inherits neither the shell nor the working directory it was written in.
     """
     if python is None and shutil.which("guard-hook") and shutil.which("guard-inject"):
-        return "guard-hook", "guard-inject"
+        return "guard-hook", "guard-inject", "guard-outcome"
     interpreter = python or sys.executable
-    return f'"{interpreter}" -m guard.hook', f'"{interpreter}" -m guard.inject'
+    return (
+        f'"{interpreter}" -m guard.hook',
+        f'"{interpreter}" -m guard.inject',
+        f'"{interpreter}" -m guard.outcome',
+    )
 
 
 def hook_settings(python: str | None = None) -> dict:
@@ -188,8 +192,13 @@ def hook_settings(python: str | None = None) -> dict:
     that can stop anything — by which point the reasoning that produced the
     command is already spent. Installing only the last one is how a guard ends up
     arguing with a plan instead of shaping it.
+
+    `PostToolUse` is the fourth, and it decides nothing. It records that the call
+    actually ran. Paired with the decision that preceded it, the absence of that
+    line is the human answering "no" to a question the guard asked — which is the
+    only feedback a guard ever gets for free.
     """
-    hook_cmd, inject_cmd = _commands(python)
+    hook_cmd, inject_cmd, outcome_cmd = _commands(python)
     return {
         "hooks": {
             "SessionStart": [{"hooks": [{"type": "command", "command": inject_cmd, "timeout": 10}]}],
@@ -198,6 +207,12 @@ def hook_settings(python: str | None = None) -> dict:
                 {
                     "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit",
                     "hooks": [{"type": "command", "command": hook_cmd, "timeout": 10}],
+                }
+            ],
+            "PostToolUse": [
+                {
+                    "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit",
+                    "hooks": [{"type": "command", "command": outcome_cmd, "timeout": 10}],
                 }
             ],
         }
