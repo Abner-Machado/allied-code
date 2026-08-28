@@ -46,6 +46,9 @@ def run(raw: str) -> dict[str, Any]:
         return respond(DEFER)
 
     config = Config.load()
+    # The runtime knows who is calling; the guard's own env var is the fallback
+    # for anything that does not say.
+    config.agent = str(payload.get("agent") or config.agent)[:64]
     decision: Decision = evaluate(tool, tool_input, config)
 
     receipt = build(

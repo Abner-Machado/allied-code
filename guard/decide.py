@@ -137,6 +137,14 @@ def evaluate(tool_name: str, tool_input: dict, config: Config, corpus_dir: Path 
     if _has_strong_precedent(evidence):
         severity = escalate(severity)
 
+    # A delegated agent works under a raised floor. The orchestrator chose to run
+    # this one and can be asked; the producer it delegated to was handed a narrow
+    # mandate and a hazard class it was never asked to touch is the failure this
+    # project exists for — `corpus/delegated-agent-deleted-tooling.md`. The floor
+    # only goes up: no agent is ever granted something it would not otherwise get.
+    if config.delegated:
+        severity = escalate(severity)
+
     if severity == CRITICAL:
         intended = DENY
     elif severity == HIGH:
@@ -152,7 +160,7 @@ def evaluate(tool_name: str, tool_input: dict, config: Config, corpus_dir: Path 
 
     return Decision(
         decision=decision,
-        reason=explain(hazards, evidence, severity, intended, config.mode),
+        reason=explain(hazards, evidence, severity, intended, config.mode, config.agent if config.delegated else ""),
         severity=severity,
         hazards=hazards,
         evidence=evidence,
@@ -181,6 +189,7 @@ def explain(
     severity: str,
     intended: str,
     mode: str,
+    delegated_agent: str = "",
 ) -> str:
     lead = hazards[0]
     parts = [f"{lead.summary} [{lead.id}]"]
@@ -192,6 +201,8 @@ def explain(
         parts.append(f"precedent {cited.id} ({cited.date or 'undated'}): {rule}")
     else:
         parts.append("no matching precedent on record")
+    if delegated_agent:
+        parts.append(f"delegated agent {delegated_agent}: floor raised one level")
     if mode == "observe" and intended == DENY:
         parts.append("observe mode: recorded as a block, not enforced")
     return " | ".join(parts)

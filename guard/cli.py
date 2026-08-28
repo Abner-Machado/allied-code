@@ -39,6 +39,8 @@ def _fmt_hit(hit) -> str:
 
 def cmd_check(args, config: Config) -> int:
     tool = args.tool
+    if getattr(args, "agent", None):
+        config.agent = args.agent
     tool_input = {"command": args.action} if tool not in ("Write", "Edit") else {"file_path": args.action}
     started = time.perf_counter()
     decision = evaluate(tool, tool_input, config)
@@ -52,6 +54,8 @@ def cmd_check(args, config: Config) -> int:
     print(f"tool      {tool}")
     print(f"decision  {decision.decision.upper()}  (would be {decision.intended.upper()} when enforcing)")
     print(f"severity  {decision.severity or '-'}")
+    if config.delegated:
+        print(f"agent     {config.agent}  (strict: floor raised one level)")
     if decision.hazards:
         print("hazards")
         for hazard in decision.hazards:
@@ -376,6 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("check", help="evaluate one action without running it")
     check.add_argument("action")
     check.add_argument("--tool", default="Bash")
+    check.add_argument("--agent", help="evaluate as this agent (raises the floor if it is a strict agent)")
     check.add_argument("--json", action="store_true")
     check.set_defaults(func=cmd_check)
 
