@@ -112,15 +112,27 @@ def _decisions(rows: list[dict]) -> list[dict]:
 
 
 def cmd_ledger(args, config: Config) -> int:
-    rows = _decisions(read(config.ledger_path))[-args.last :] if args.last else _decisions(read(config.ledger_path))
+    """Receipts, numbered so one of them can be named later.
+
+    The number is the receipt's position in the whole ledger, not in the window
+    being shown. `--last 20` therefore prints #145..#164 rather than #1..#20, and
+    the number a receipt carries today still points at the same receipt tomorrow.
+    Numbering the window instead would have been prettier, and would have meant
+    `guard learn --from-ledger 7` scaffolding a different incident depending on
+    how much work happened in between.
+    """
+    all_rows = _decisions(read(config.ledger_path))
+    rows = all_rows[-args.last :] if args.last else all_rows
     if not rows:
         print(f"No receipts yet at {config.ledger_path}")
         return 0
-    for row in rows:
+    offset = len(all_rows) - len(rows)
+    width = len(str(len(all_rows)))
+    for position, row in enumerate(rows, start=offset + 1):
         marker = {"deny": "BLOCK", "ask": "ASK  ", "allow": "ALLOW", "defer": "     "}.get(row["decision"], "     ")
-        print(f"{row['ts']}  {marker}  {row['tool']:<10} {row['action'][:80]}")
+        print(f"#{position:<{width}}  {row['ts']}  {marker}  {row['tool']:<10} {row['action'][:80]}")
         if args.verbose:
-            print(f"    {row['reason']}")
+            print(f"    {' ' * width}{row['reason']}")
     return 0
 
 
@@ -191,22 +203,122 @@ def _print_verdict(result: Verdict) -> None:
         print("              edit the file or delete it — the guard will not do it for you.")
 
 
+SEVERITIES = ("medium", "high", "critical")
+
+
+def _receipt_tags(row: dict) -> list[str]:
+    """Tags a receipt can supply on its own.
+
+    Hazard ids are dotted (`fs.recursive-delete`), and retrieval already splits
+    dotted identifiers, so the pieces are what earn their place here: an incident
+    tagged `recursive delete` is reachable from a query that says either word.
+    """
+    tags: list[str] = []
+    for hazard in row.get("hazards") or []:
+        for piece in re.split(r"[.\-_]", str(hazard).lower()):
+            if len(piece) > 2 and piece not in tags:
+                tags.append(piece)
+    tool = str(row.get("tool", "")).lower()
+    if tool and tool not in tags:
+        tags.append(tool)
+    return tags
+
+
+def receipt_scaffold(row: dict) -> dict:
+    """The parts of an incident a receipt is entitled to fill in.
+
+    Everything here is transcription: the date, the tool, the redacted command,
+    what the guard decided, and what it cited at the time. The rule and the "Why
+    the rule" prose are deliberately absent. A generated rule would be a guess
+    wearing the clothes of a decision, and this corpus is only worth consulting
+    because every rule in it was written by somebody who had understood the
+    incident.
+    """
+    date = str(row.get("ts", ""))[:10]
+    action = row.get("action") or "(no action recorded)"
+    decision = row.get("decision") or "defer"
+    intended = row.get("intended") or decision
+    hazards = [str(h) for h in (row.get("hazards") or [])]
+    cited = [str(e.get("id", "")) for e in (row.get("evidence") or []) if e.get("id")]
+
+    verdict_line = f"The guard decided `{decision}`"
+    if intended != decision:
+        verdict_line += f" (`{intended}` once enforcing)"
+    verdict_line += f", classifying it as {', '.join(hazards)}." if hazards else ", classifying nothing."
+
+    lines = [
+        f"On {date or 'an unrecorded date'} the guard saw this {row.get('tool') or 'tool'} call:",
+        "",
+        "```",
+        action,
+        "```",
+        "",
+        verdict_line,
+    ]
+    if cited:
+        lines += ["", "It leaned on: " + ", ".join(cited) + "."]
+    lines += [
+        "",
+        "(What actually went wrong, in your words. The receipt only knows what was",
+        "proposed and what the guard made of it, not what it cost.)",
+    ]
+
+    severity = str(row.get("severity") or "").lower()
+    return {
+        "date": date,
+        "severity": severity if severity in SEVERITIES else "",
+        "tags": _receipt_tags(row),
+        "what": "\n".join(lines),
+        "source": f"ledger:{row['key']}" if row.get("key") else "ledger",
+    }
+
+
+def _receipt_at(config: Config, position: int) -> tuple[dict | None, str]:
+    rows = _decisions(read(config.ledger_path))
+    if not rows:
+        return None, f"No decision receipts at {config.ledger_path}. Nothing to learn from yet."
+    if not 1 <= position <= len(rows):
+        return None, (
+            f"No receipt #{position}. The ledger holds {len(rows)}"
+            f" (see them with: guard ledger --last {min(len(rows), 20)})."
+        )
+    return rows[position - 1], ""
+
+
 def cmd_learn(args, config: Config) -> int:
-    slug = _SLUG.sub("-", args.id.lower()).strip("-")
+    """Write a new incident file, optionally transcribed from a receipt.
+
+    The gap this closes: the ledger knows what was proposed and the corpus knows
+    what went wrong, and until now nothing joined them. Turning a receipt into an
+    incident meant retyping it from memory at the exact moment nobody wants to
+    write documentation, so the corpus stopped growing — and a corpus that stops
+    growing stops being worth consulting.
+    """
+    scaffold: dict = {}
+    if args.from_ledger is not None:
+        row, problem = _receipt_at(config, args.from_ledger)
+        if row is None:
+            print(problem)
+            return 1
+        scaffold = receipt_scaffold(row)
+
+    slug = _SLUG.sub("-", (args.id or args.title).lower()).strip("-")
     path = config.corpus_dir / f"{slug}.md"
     if path.exists() and not args.force:
         print(f"{path} already exists. Use --force to overwrite.")
         return 1
-    body = args.what or "(fill in what happened, in one paragraph)"
+
+    tags = args.tags or scaffold.get("tags", [])
+    body = args.what or scaffold.get("what") or "(fill in what happened, in one paragraph)"
     content = (
         "---\n"
         f"id: {slug}\n"
         f"title: {args.title}\n"
-        f"date: {args.date or time.strftime('%Y-%m-%d')}\n"
-        f"severity: {args.severity}\n"
-        f"tags: {' '.join(args.tags)}\n"
+        f"date: {args.date or scaffold.get('date') or time.strftime('%Y-%m-%d')}\n"
+        f"severity: {args.severity or scaffold.get('severity') or 'high'}\n"
+        f"tags: {' '.join(tags)}\n"
         f"rule: {args.rule}\n"
-        f"source: {args.source}\n"
+        f"source: {args.source or scaffold.get('source') or 'local-incident'}\n"
         "---\n\n"
         "## What happened\n\n"
         f"{body}\n\n"
@@ -215,7 +327,10 @@ def cmd_learn(args, config: Config) -> int:
     )
     config.corpus_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-    print(f"wrote {path}")
+    print(f"wrote  {path}")
+    if scaffold:
+        print(f"       from receipt #{args.from_ledger}: date, command, hazards, citations")
+        print('       still yours: the paragraph under "What happened", and "Why the rule"')
     return 0
 
 
@@ -406,14 +521,20 @@ def build_parser() -> argparse.ArgumentParser:
     stats.set_defaults(func=cmd_stats)
 
     learn = sub.add_parser("learn", help="record a new incident")
-    learn.add_argument("--id", required=True)
+    learn.add_argument("--id", help="file name and incident id (default: a slug of the title)")
     learn.add_argument("--title", required=True)
     learn.add_argument("--rule", required=True)
-    learn.add_argument("--severity", default="high", choices=("medium", "high", "critical"))
+    learn.add_argument(
+        "--from-ledger",
+        type=int,
+        metavar="N",
+        help="pre-fill from receipt #N, the number shown by `guard ledger`",
+    )
+    learn.add_argument("--severity", choices=SEVERITIES)
     learn.add_argument("--tags", nargs="*", default=[])
     learn.add_argument("--what", help="one paragraph on what happened")
     learn.add_argument("--date")
-    learn.add_argument("--source", default="local-incident")
+    learn.add_argument("--source")
     learn.add_argument("--force", action="store_true")
     learn.set_defaults(func=cmd_learn)
 
