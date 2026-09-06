@@ -8,8 +8,12 @@ missing corpus and an unwritable ledger all have to end in "no opinion".
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+import shutil
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -295,6 +299,168 @@ class TestHookContract(unittest.TestCase):
             self._run(payload)
         per_call = (time.perf_counter() - started) / 20 * 1000
         self.assertLess(per_call, 50, f"{per_call:.1f} ms per call is too slow for a pre-execution hook")
+
+
+class TestLearnFromLedger(unittest.TestCase):
+    """The receipt-to-incident path.
+
+    The point of these is not that a file gets written. It is that the file the
+    receipt produces is a real incident: parseable, tagged, and reachable by the
+    same retrieval the guard uses. A scaffold that writes something the corpus
+    cannot read closes the loop only on paper.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.corpus_dir = self.tmp / "corpus"
+        self.corpus_dir.mkdir()
+        self.ledger = self.tmp / "ledger.jsonl"
+        self.cfg = Config(mode="enforce", corpus_dir=self.corpus_dir, ledger_path=self.ledger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_ledger(self, *rows: dict) -> None:
+        with self.ledger.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+
+    @staticmethod
+    def _receipt(**kw) -> dict:
+        row = {
+            "ts": "2026-08-30T11:02:44-0300",
+            "kind": "decision",
+            "tool": "Bash",
+            "action": "rm -rf /tmp/build",
+            "decision": "deny",
+            "intended": "deny",
+            "severity": "critical",
+            "hazards": ["fs.recursive-delete"],
+            "evidence": [{"id": "delegated-agent-deleted-tooling", "score": 0.62}],
+            "reason": "recursive delete",
+            "key": "abc123",
+        }
+        row.update(kw)
+        return row
+
+    def _learn(self, *argv: str) -> int:
+        args = cli.build_parser().parse_args(["learn", *argv])
+        with contextlib.redirect_stdout(io.StringIO()):
+            return cli.cmd_learn(args, self.cfg)
+
+    def test_scaffold_transcribes_the_receipt(self):
+        scaffold = cli.receipt_scaffold(self._receipt())
+        self.assertEqual(scaffold["date"], "2026-08-30")
+        self.assertEqual(scaffold["severity"], "critical")
+        self.assertEqual(scaffold["source"], "ledger:abc123")
+        self.assertIn("rm -rf /tmp/build", scaffold["what"])
+        self.assertIn("delegated-agent-deleted-tooling", scaffold["what"])
+
+    def test_hazard_ids_become_searchable_tags(self):
+        tags = cli.receipt_scaffold(self._receipt())["tags"]
+        self.assertIn("recursive", tags)
+        self.assertIn("delete", tags)
+        self.assertIn("bash", tags)
+
+    def test_scaffold_never_invents_a_rule(self):
+        scaffold = cli.receipt_scaffold(self._receipt())
+        self.assertNotIn("rule", scaffold)
+
+    def test_scaffold_survives_a_receipt_missing_everything(self):
+        scaffold = cli.receipt_scaffold({})
+        self.assertEqual(scaffold["tags"], [])
+        self.assertEqual(scaffold["severity"], "")
+        self.assertIn("no action recorded", scaffold["what"])
+
+    def test_written_incident_is_reachable_by_retrieval(self):
+        self._write_ledger(self._receipt())
+        code = self._learn(
+            "--from-ledger", "1",
+            "--title", "A build tree was deleted while still in use",
+            "--rule", "Deletion runs from the orchestrator, one item at a time.",
+        )
+        self.assertEqual(code, 0)
+        written = next(self.corpus_dir.glob("*.md"))
+        incident = corpus.parse(written.read_text(encoding="utf-8"), written)
+        self.assertIsNotNone(incident)
+        self.assertEqual(incident.severity, "critical")
+        self.assertEqual(incident.date, "2026-08-30")
+        self.assertIn("recursive", incident.tags)
+        hits = corpus.search(self.corpus_dir, "recursive delete of a build tree", limit=3, min_score=0.0)
+        self.assertIn(incident.id, [h.incident.id for h in hits])
+
+    def test_id_defaults_to_a_slug_of_the_title(self):
+        self._write_ledger(self._receipt())
+        self._learn("--from-ledger", "1", "--title", "Deleted the Build Tree!", "--rule", "r")
+        self.assertTrue((self.corpus_dir / "deleted-the-build-tree.md").exists())
+
+    def test_explicit_flags_win_over_the_receipt(self):
+        self._write_ledger(self._receipt())
+        self._learn(
+            "--from-ledger", "1", "--title", "t", "--rule", "r",
+            "--severity", "medium", "--date", "2026-01-01", "--tags", "manual", "--what", "handwritten",
+        )
+        written = next(self.corpus_dir.glob("*.md"))
+        incident = corpus.parse(written.read_text(encoding="utf-8"), written)
+        self.assertEqual(incident.severity, "medium")
+        self.assertEqual(incident.date, "2026-01-01")
+        self.assertEqual(incident.tags, ("manual",))
+        self.assertEqual(incident.body.split("\n")[2], "handwritten")
+
+    def test_out_of_range_receipt_writes_nothing(self):
+        self._write_ledger(self._receipt())
+        self.assertEqual(self._learn("--from-ledger", "9", "--title", "t", "--rule", "r"), 1)
+        self.assertEqual(list(self.corpus_dir.glob("*.md")), [])
+
+    def test_empty_ledger_writes_nothing(self):
+        self.assertEqual(self._learn("--from-ledger", "1", "--title", "t", "--rule", "r"), 1)
+        self.assertEqual(list(self.corpus_dir.glob("*.md")), [])
+
+    def test_outcome_lines_are_not_numbered_as_receipts(self):
+        """An outcome line is not a decision, so it must not take a number.
+
+        If it did, every number printed by `guard ledger` would drift by however
+        many calls happened to run since — and `--from-ledger 7` would scaffold
+        somebody else's incident.
+        """
+        self._write_ledger(
+            self._receipt(action="first"),
+            {"kind": "outcome", "key": "abc123", "outcome": "executed", "ts": "2026-08-30T11:02:45-0300"},
+            self._receipt(action="second"),
+        )
+        rows = cli._decisions(ledger.read(self.ledger))
+        self.assertEqual([r["action"] for r in rows], ["first", "second"])
+
+    def test_existing_file_is_never_overwritten_without_force(self):
+        self._write_ledger(self._receipt())
+        self._learn("--from-ledger", "1", "--title", "t", "--rule", "first rule")
+        self.assertEqual(self._learn("--from-ledger", "1", "--title", "t", "--rule", "second rule"), 1)
+        self.assertIn("first rule", (self.corpus_dir / "t.md").read_text(encoding="utf-8"))
+
+
+class TestLedgerNumbering(unittest.TestCase):
+    def test_numbers_are_absolute_not_window_relative(self):
+        """`--last 2` over five receipts prints #4 and #5, not #1 and #2."""
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            path = tmp / "ledger.jsonl"
+            with path.open("w", encoding="utf-8") as handle:
+                for i in range(5):
+                    handle.write(json.dumps({
+                        "ts": "2026-08-30T11:0%d:00-0300" % i, "kind": "decision", "tool": "Bash",
+                        "action": "cmd%d" % i, "decision": "allow", "reason": "", "hazards": [], "evidence": [],
+                    }) + "\n")
+            cfg = Config(mode="observe", corpus_dir=Path(CORPUS), ledger_path=path)
+            args = cli.build_parser().parse_args(["ledger", "--last", "2"])
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                cli.cmd_ledger(args, cfg)
+            printed = buffer.getvalue().splitlines()
+            self.assertEqual(len(printed), 2)
+            self.assertTrue(printed[0].startswith("#4 "), printed[0])
+            self.assertTrue(printed[1].startswith("#5 "), printed[1])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

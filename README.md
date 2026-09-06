@@ -109,12 +109,11 @@ then it protects nothing.
 guard check "rm -rf ~/Tools"            # evaluate one action, without running it
 guard check "git push --force" --json   # machine-readable, exit 1 when denied
 guard brief "rotate the API keys"       # what to know before starting
-guard ledger --last 20 -v               # the receipts
+guard ledger --last 20 -v               # the receipts, numbered
 guard stats                             # decisions, latency, and how often you agreed
-guard learn --id truncated-write \
+guard learn --from-ledger 147 \
       --title "Output hit the ceiling and the cut was never noticed" \
-      --rule "Check the stop reason before treating output as complete" \
-      --severity high --tags truncation output
+      --rule "Check the stop reason before treating output as complete"
 ```
 
 ## Start in observe mode
@@ -157,6 +156,37 @@ single decision. A guard that relaxes because it was argued with is a guard that
 can be argued with, and that failure is silent. The verdict produces a report;
 lowering friction stays something a human does, in the corpus, as a commit you
 can read months later. Precedent still escalates and never de-escalates.
+
+## Turning a receipt into an incident
+
+The ledger knows what was proposed. The corpus knows what went wrong. Until now
+nothing joined them, so promoting a receipt meant retyping it from memory at the
+exact moment nobody wants to write documentation — and a corpus that stops
+growing stops being worth consulting.
+
+Every receipt now carries a number, and that number is an argument:
+
+```bash
+guard ledger --last 20        # #145  2026-08-30T11:02  BLOCK  Bash  rm -rf build
+guard learn --from-ledger 145 \
+      --title "A build tree was deleted while an editor still held it" \
+      --rule "Deleting a tree runs from the orchestrator, one item at a time"
+```
+
+The receipt supplies what it can prove: the date, the tool, the redacted command,
+the hazard classes as searchable tags, and which incidents the guard cited at the
+time. The file lands in the corpus already reachable by retrieval, with two holes
+left in it — the paragraph saying what actually went wrong, and *why the rule*.
+
+Those two stay handwritten on purpose. The receipt only ever knew what was
+proposed and what the guard made of it; it never knew what it cost. A generated
+rule would be a guess wearing the clothes of a decision, and this corpus is worth
+consulting only because every rule in it was written by somebody who had
+understood the incident.
+
+The number is the receipt's position in the whole ledger, not in the window you
+printed. `--last 20` shows #145..#164, and the number you read today still points
+at the same receipt next week.
 
 ## Delegated agents run under a lower ceiling
 

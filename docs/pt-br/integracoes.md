@@ -156,6 +156,36 @@ guard learn --id chave-orfa \
   --severity high --tags credencial formulario automacao
 ```
 
+### Promovendo um recibo a incidente
+
+O ledger sabe o que foi proposto; o corpus sabe o que deu errado. Até agora nada
+ligava os dois, então transformar um recibo em incidente exigia redigitar tudo de
+memória — justamente no momento em que ninguém quer escrever documentação. Um
+corpus que para de crescer para de valer a consulta.
+
+Todo recibo agora tem um número, e esse número é um argumento:
+
+```bash
+guard ledger --last 20        # #145  2026-08-30T11:02  BLOCK  Bash  rm -rf build
+guard learn --from-ledger 145 \
+  --title "Uma árvore de build foi apagada com o editor ainda aberto" \
+  --rule "Apagar árvore roda pelo orquestrador, um item por vez"
+```
+
+O recibo preenche só o que consegue provar: a data, a ferramenta, o comando já
+redigido, as classes de perigo viradas em tags pesquisáveis, e quais incidentes o
+guarda citou na hora. O arquivo nasce no corpus já alcançável pela recuperação,
+com dois buracos: o parágrafo do que realmente aconteceu, e o *porquê da regra*.
+
+Esses dois ficam à mão de propósito. O recibo só sabia o que foi proposto e o que
+o guarda achou disso — nunca soube o que aquilo custou. Uma regra gerada seria um
+palpite vestido de decisão, e este corpus só vale a consulta porque cada regra
+dele foi escrita por alguém que tinha entendido o incidente.
+
+O número é a posição do recibo no ledger inteiro, não na janela impressa:
+`--last 20` mostra #145..#164, e o número lido hoje continua apontando para o
+mesmo recibo semana que vem.
+
 ---
 
 ## Entregando o corpus a outro modelo
