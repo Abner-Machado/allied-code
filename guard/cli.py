@@ -374,13 +374,13 @@ def hook_settings(python: str | None = None) -> dict:
             "UserPromptSubmit": [{"hooks": [{"type": "command", "command": inject_cmd, "timeout": 10}]}],
             "PreToolUse": [
                 {
-                    "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit",
+                    "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit|mcp__.*",
                     "hooks": [{"type": "command", "command": hook_cmd, "timeout": 10}],
                 }
             ],
             "PostToolUse": [
                 {
-                    "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit",
+                    "matcher": "Bash|PowerShell|Write|Edit|NotebookEdit|mcp__.*",
                     "hooks": [{"type": "command", "command": outcome_cmd, "timeout": 10}],
                 }
             ],
