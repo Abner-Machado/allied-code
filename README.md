@@ -384,11 +384,13 @@ guard auditable: a class can be wrong without a rule being wrong.
   queries of similar length — a threshold tuned on commands will not transfer to
   prompts. See `corpus/threshold-silently-disabled-a-layer.md`; this project shot
   itself in the foot with exactly that and the incident is in the corpus.
-- **MCP tool calls are not classified.** Classification reads shell commands and
-  file paths. A video or media MCP server — generate, render, upload, publish —
-  passes structured arguments the guard does not inspect, so those flows are
-  outside the fence today. The hazards are mapped in the integration notes; the
-  layer is not built.
+- **MCP tool calls are classified by name only.** The guard reads the verb in
+  `mcp__<server>__<action>` (`trash_file`, `send_message`, `ads_catalog_delete`)
+  and never the arguments. So `trash_file` is denied whatever the file is, and a
+  verb the table does not know is reported as `mcp.unknown-verb` rather than
+  waved through. What it cannot see is the payload: a `send` to yourself and a
+  `send` to a customer look the same, and a server that hides a destructive
+  action behind a neutral name (`run`, `apply`, `sync`) is invisible to it.
 - Classification is regex over the command string. Obfuscation defeats it
   trivially (`$env:X="rm"; & $env:X -rf .`). This is a guard against accidents and
   overconfident automation, not against an adversary with shell access.
