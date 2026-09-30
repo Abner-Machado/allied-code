@@ -47,7 +47,15 @@ COMMAND_PATTERNS: tuple[_Pattern, ...] = (
         CRITICAL,
         "recursive, forced delete of a directory tree",
         "filesystem delete destructive",
+        # `rm` needs both a recursive flag and a force flag. They arrive in any
+        # order and in three shapes: one glued cluster (`-rf`), separate short
+        # flags (`-r -f`), or long flags (`--recursive --force`). The first two
+        # alternatives catch the glued cluster; the next two walk the rest of the
+        # command segment for the two flags in either order. Requiring both is
+        # deliberate — a bare `rm -r` keeps its own, lesser treatment.
         r"\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*f|\brm\s+(-[a-z]*\s+)*-[a-z]*f[a-z]*r"
+        r"|\brm\b[^\n;|]*?(\s-[a-z]*r[a-z]*|\s--recursive\b)[^\n;|]*?(\s-[a-z]*f[a-z]*|\s--force\b)"
+        r"|\brm\b[^\n;|]*?(\s-[a-z]*f[a-z]*|\s--force\b)[^\n;|]*?(\s-[a-z]*r[a-z]*|\s--recursive\b)"
         r"|remove-item\b[^\n|;]*(-recurse\b[^\n|;]*-force|-force\b[^\n|;]*-recurse)"
         r"|\brmdir\s+/s|\bdel\s+/[fsq]",
     ),

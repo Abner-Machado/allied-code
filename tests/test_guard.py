@@ -41,6 +41,31 @@ class TestClassification(unittest.TestCase):
         hazards = rules.classify_command("Remove-Item -Recurse -Force C:\\work\\old")
         self.assertTrue(any(h.id == "fs.recursive-delete" for h in hazards))
 
+    def test_recursive_delete_flag_shapes(self):
+        # The two flags arrive glued, separated, long, and in either order. All of
+        # these are the same `rm -rf`; only the glued form used to be caught.
+        for command in (
+            "rm -rf /tmp/x",
+            "rm -fr /tmp/x",
+            "rm -r -f /tmp/x",
+            "rm -f -r /tmp/x",
+            "rm --recursive --force /tmp/x",
+            "rm -r --force /tmp/x",
+            "rm --force -r /tmp/x",
+            "rm -Rf /tmp/x",
+        ):
+            with self.subTest(command=command):
+                ids = [h.id for h in rules.classify_command(command)]
+                self.assertIn("fs.recursive-delete", ids)
+
+    def test_recursive_delete_needs_both_flags(self):
+        # Force alone or recurse alone is not the forced recursive delete this
+        # class names; a bare `rm -r` keeps its own, lesser treatment.
+        for command in ("rm -r dir", "rm -f file", "rm -i file", "rm file.txt"):
+            with self.subTest(command=command):
+                ids = [h.id for h in rules.classify_command(command)]
+                self.assertNotIn("fs.recursive-delete", ids)
+
     def test_force_push_is_history_rewrite(self):
         for command in ("git push --force origin main", "git push -f", "git reset --hard HEAD~3"):
             with self.subTest(command=command):

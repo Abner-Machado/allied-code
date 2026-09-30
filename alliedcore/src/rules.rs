@@ -117,9 +117,15 @@ static COMMAND_PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
             CRITICAL,
             "recursive, forced delete of a directory tree",
             &["filesystem", "delete", "destructive"],
+            // `rm` needs both a recursive flag and a force flag, in any order and
+            // in three shapes: one glued cluster (`-rf`), separate short flags
+            // (`-r -f`), or long flags (`--recursive --force`). The first two
+            // alternatives catch the glued cluster; the next two walk the segment
+            // for the two flags in either order. No look-ahead is used, so this
+            // stays inside the `regex` crate's linear-time guarantee.
             &Lazy::new(|| {
                 Regex::new(
-                    r"(?i)\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*f|\brm\s+(-[a-z]*\s+)*-[a-z]*f[a-z]*r|remove-item\b[^\n|;]*(-recurse\b[^\n|;]*-force|-force\b[^\n|;]*-recurse)|\brmdir\s+/s|\bdel\s+/[fsq]"
+                    r"(?i)\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*f|\brm\s+(-[a-z]*\s+)*-[a-z]*f[a-z]*r|\brm\b[^\n;|]*?(\s-[a-z]*r[a-z]*|\s--recursive\b)[^\n;|]*?(\s-[a-z]*f[a-z]*|\s--force\b)|\brm\b[^\n;|]*?(\s-[a-z]*f[a-z]*|\s--force\b)[^\n;|]*?(\s-[a-z]*r[a-z]*|\s--recursive\b)|remove-item\b[^\n|;]*(-recurse\b[^\n|;]*-force|-force\b[^\n|;]*-recurse)|\brmdir\s+/s|\bdel\s+/[fsq]"
                 ).unwrap()
             }),
         ),
@@ -709,6 +715,41 @@ mod tests {
         let segs = crate::lexer::segments("rm -rf /tmp/x", crate::lexer::Shell::Posix);
         let hazards = classify_command(&segs);
         assert!(hazards.iter().any(|h| h.id == "fs.recursive-delete"));
+    }
+
+    #[test]
+    fn test_fs_recursive_delete_flag_shapes() {
+        // Glued, separated, long, and either order — all the same `rm -rf`.
+        for cmd in [
+            "rm -rf /tmp/x",
+            "rm -fr /tmp/x",
+            "rm -r -f /tmp/x",
+            "rm -f -r /tmp/x",
+            "rm --recursive --force /tmp/x",
+            "rm -r --force /tmp/x",
+            "rm --force -r /tmp/x",
+            "rm -Rf /tmp/x",
+        ] {
+            let segs = crate::lexer::segments(cmd, crate::lexer::Shell::Posix);
+            let hazards = classify_command(&segs);
+            assert!(
+                hazards.iter().any(|h| h.id == "fs.recursive-delete"),
+                "expected fs.recursive-delete for {cmd:?}, got {hazards:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fs_recursive_delete_needs_both_flags() {
+        // Recurse alone or force alone is not the forced recursive delete.
+        for cmd in ["rm -r dir", "rm -f file", "rm -i file", "rm file.txt"] {
+            let segs = crate::lexer::segments(cmd, crate::lexer::Shell::Posix);
+            let hazards = classify_command(&segs);
+            assert!(
+                !hazards.iter().any(|h| h.id == "fs.recursive-delete"),
+                "did not expect fs.recursive-delete for {cmd:?}, got {hazards:?}"
+            );
+        }
     }
 
     #[test]
