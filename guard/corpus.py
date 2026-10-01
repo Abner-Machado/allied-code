@@ -58,8 +58,10 @@ def tokenize(text: str) -> tuple[str, ...]:
             continue
         out.append(token)
         # Split dotted identifiers so `git.history-rewrite` also matches `history`.
+        # A token with no separator splits to itself; skip that so a plain word is
+        # not counted twice and double-weighted in the term frequency.
         for piece in re.split(r"[.\-_]", token):
-            if len(piece) > 2 and piece not in _STOP:
+            if piece != token and len(piece) > 2 and piece not in _STOP:
                 out.append(piece)
     return tuple(out)
 
