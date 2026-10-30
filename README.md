@@ -411,6 +411,12 @@ Every line here was read and accepted by a human before it shipped. Saying so
 costs nothing and makes the provenance of the code checkable, which is the same
 argument the corpus makes about incidents.
 
+## Sponsors
+
+No sponsors yet. If this saves your team from an agent doing something expensive,
+you can [fund the next fix](https://github.com/sponsors/Abner-Machado). The code stays
+MIT either way. See [SPONSORS.md](SPONSORS.md).
+
 ## License
 
 MIT.
