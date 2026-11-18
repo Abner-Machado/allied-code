@@ -1,0 +1,21 @@
+# Two ecosystems here, which is why this file is not a copy of the one in the pure-Python
+# repositories: the workflow pins actions, and alliedcore/ is a Rust crate with a lockfile.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+  - package-ecosystem: cargo
+    directory: "/alliedcore"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+      - rust
